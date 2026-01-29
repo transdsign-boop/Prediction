@@ -78,6 +78,42 @@
     </div>
   </div>
 
+  <!-- Orderbook / Liquidity -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="card p-5">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Best Bid / Ask</p>
+      <p class="text-2xl font-bold font-mono">
+        <span id="ob-bid" class="text-green-400">--</span>
+        <span class="text-gray-600 mx-1">/</span>
+        <span id="ob-ask" class="text-red-400">--</span>
+      </p>
+      <p class="text-xs text-gray-600 mt-1">Spread: <span id="ob-spread" class="font-mono text-gray-400">--</span>c</p>
+    </div>
+    <div class="card p-5">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">Book Depth</p>
+      <div class="flex items-end gap-1 h-10">
+        <div class="flex-1 flex flex-col items-center">
+          <span id="ob-yes-depth" class="text-xs font-mono text-green-400 mb-1">0</span>
+          <div id="ob-yes-bar" class="w-full bg-green-600 rounded-t" style="height:2px"></div>
+        </div>
+        <div class="flex-1 flex flex-col items-center">
+          <span id="ob-no-depth" class="text-xs font-mono text-red-400 mb-1">0</span>
+          <div id="ob-no-bar" class="w-full bg-red-600 rounded-t" style="height:2px"></div>
+        </div>
+      </div>
+      <div class="flex text-[10px] text-gray-600 mt-1">
+        <span class="flex-1 text-center">YES bids</span>
+        <span class="flex-1 text-center">NO bids</span>
+      </div>
+    </div>
+    <div class="card p-5">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">Top of Book</p>
+      <div id="ob-levels" class="text-xs font-mono space-y-0.5 max-h-[80px] overflow-hidden">
+        <span class="text-gray-600">Waiting for data...</span>
+      </div>
+    </div>
+  </div>
+
   <!-- Alpha Engine Cards -->
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
     <div class="card p-5">
@@ -284,6 +320,39 @@
         } else {
           overrideEl.textContent = 'None';
           overrideEl.className = 'text-lg font-semibold text-gray-500';
+        }
+
+        // Orderbook / Liquidity
+        if (d.orderbook) {
+          const ob = d.orderbook;
+          document.getElementById('ob-bid').textContent = ob.best_bid + 'c';
+          document.getElementById('ob-ask').textContent = ob.best_ask + 'c';
+          document.getElementById('ob-spread').textContent = ob.spread;
+
+          const yesDepth = ob.yes_depth || 0;
+          const noDepth = ob.no_depth || 0;
+          document.getElementById('ob-yes-depth').textContent = yesDepth;
+          document.getElementById('ob-no-depth').textContent = noDepth;
+
+          // Scale bars relative to max depth
+          const maxDepth = Math.max(yesDepth, noDepth, 1);
+          document.getElementById('ob-yes-bar').style.height = Math.max(2, (yesDepth / maxDepth) * 36) + 'px';
+          document.getElementById('ob-no-bar').style.height = Math.max(2, (noDepth / maxDepth) * 36) + 'px';
+
+          // Top-of-book levels
+          const levelsEl = document.getElementById('ob-levels');
+          let html = '';
+          const yesLevels = ob.yes_levels || [];
+          const noLevels = ob.no_levels || [];
+          const maxRows = Math.max(yesLevels.length, noLevels.length, 1);
+          for (let i = 0; i < Math.min(maxRows, 5); i++) {
+            const yp = yesLevels[i] ? yesLevels[i][0] + 'c' : '';
+            const yq = yesLevels[i] ? 'x' + yesLevels[i][1] : '';
+            const np = noLevels[i] ? noLevels[i][0] + 'c' : '';
+            const nq = noLevels[i] ? 'x' + noLevels[i][1] : '';
+            html += `<div class="flex justify-between"><span class="text-green-400">${yq} ${yp}</span><span class="text-gray-600">|</span><span class="text-red-400">${np} ${nq}</span></div>`;
+          }
+          levelsEl.innerHTML = html || '<span class="text-gray-600">Empty book</span>';
         }
 
         // Environment toggle styling

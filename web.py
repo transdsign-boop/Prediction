@@ -78,6 +78,7 @@ async def api_status():
         "env": config.KALSHI_ENV,
         "alpha": alpha_monitor.get_status(),
         "alpha_override": bot.status.get("alpha_override"),
+        "orderbook": bot.status.get("orderbook"),
     }
 
 

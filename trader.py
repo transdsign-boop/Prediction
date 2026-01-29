@@ -407,6 +407,20 @@ class TradingBot:
             # 5. Orderbook + spread guard
             ob = await self.fetch_orderbook(ticker)
             spread_ok, best_bid, best_ask = self._spread_guard(ob)
+
+            # Store orderbook snapshot for dashboard
+            yes_orders = ob.get("yes", []) if isinstance(ob.get("yes"), list) else []
+            no_orders = ob.get("no", []) if isinstance(ob.get("no"), list) else []
+            self.status["orderbook"] = {
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "spread": best_ask - best_bid,
+                "yes_levels": yes_orders[:5],   # top 5 YES bid levels [[price, qty], ...]
+                "no_levels": no_orders[:5],      # top 5 NO bid levels [[price, qty], ...]
+                "yes_depth": sum(q for _, q in yes_orders),
+                "no_depth": sum(q for _, q in no_orders),
+            }
+
             if not spread_ok:
                 self.status["last_action"] = "Spread too wide — holding"
                 return
