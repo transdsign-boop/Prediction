@@ -1,0 +1,127 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# --- Per-environment Kalshi credentials ---
+KALSHI_LIVE_API_KEY_ID = os.getenv("KALSHI_LIVE_API_KEY_ID", "")
+KALSHI_LIVE_PRIVATE_KEY_PATH = os.getenv("KALSHI_LIVE_PRIVATE_KEY_PATH", "./kalshi_private_key.pem")
+
+KALSHI_DEMO_API_KEY_ID = os.getenv("KALSHI_DEMO_API_KEY_ID", "")
+KALSHI_DEMO_PRIVATE_KEY_PATH = os.getenv("KALSHI_DEMO_PRIVATE_KEY_PATH", "./kalshi_demo_private_key.pem")
+
+# Active environment: "demo" or "live"
+KALSHI_ENV = os.getenv("KALSHI_ENV", "demo")
+
+# Resolved from the active environment
+KALSHI_API_KEY_ID = KALSHI_LIVE_API_KEY_ID if KALSHI_ENV == "live" else KALSHI_DEMO_API_KEY_ID
+KALSHI_API_PRIVATE_KEY_PATH = KALSHI_LIVE_PRIVATE_KEY_PATH if KALSHI_ENV == "live" else KALSHI_DEMO_PRIVATE_KEY_PATH
+
+HOSTS = {
+    "live": "https://api.elections.kalshi.com",
+    "demo": "https://demo-api.kalshi.co",
+}
+
+# --- Anthropic ---
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# --- Trading Rules (mutable at runtime) ---
+MAX_POSITION_SIZE = int(os.getenv("MAX_POSITION_SIZE", "50"))
+MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "25.00"))
+ORDER_SIZE = int(os.getenv("ORDER_SIZE", "10"))
+TRADING_ENABLED = os.getenv("TRADING_ENABLED", "false").lower() == "true"
+
+# Target market series
+MARKET_SERIES = "KXBTC15M"
+
+# Safety thresholds
+MIN_SECONDS_TO_CLOSE = 90
+MAX_SPREAD_CENTS = 5
+MIN_AGENT_CONFIDENCE = 0.75
+MIN_CONTRACT_PRICE = 5
+
+# Alpha Engine thresholds
+DELTA_THRESHOLD = 20              # USD — front-run trigger
+EXTREME_DELTA_THRESHOLD = 50      # USD — aggressive execution trigger
+ANCHOR_SECONDS_THRESHOLD = 60     # seconds — anchor defense trigger
+
+# Loop interval
+POLL_INTERVAL_SECONDS = 10
+
+
+# --- Runtime helpers ---
+TUNABLE_FIELDS = {
+    "TRADING_ENABLED":      {"type": "bool"},
+    "ORDER_SIZE":           {"type": "int",   "min": 1,  "max": 100},
+    "MAX_POSITION_SIZE":    {"type": "int",   "min": 1,  "max": 500},
+    "MAX_DAILY_LOSS":       {"type": "float", "min": 1,  "max": 1000},
+    "MIN_SECONDS_TO_CLOSE": {"type": "int",   "min": 30, "max": 600},
+    "MAX_SPREAD_CENTS":     {"type": "int",   "min": 1,  "max": 50},
+    "MIN_AGENT_CONFIDENCE": {"type": "float", "min": 0,  "max": 1},
+    "MIN_CONTRACT_PRICE":   {"type": "int",   "min": 1,  "max": 55},
+    "POLL_INTERVAL_SECONDS":{"type": "int",   "min": 5,  "max": 120},
+    "DELTA_THRESHOLD":          {"type": "int",   "min": 5,   "max": 200},
+    "EXTREME_DELTA_THRESHOLD":  {"type": "int",   "min": 10,  "max": 500},
+    "ANCHOR_SECONDS_THRESHOLD": {"type": "int",   "min": 15,  "max": 120},
+}
+
+
+def get_tunables() -> dict:
+    return {k: getattr(__import__(__name__), k) for k in TUNABLE_FIELDS}
+
+
+def set_tunables(updates: dict) -> dict:
+    import config as _self
+    from database import set_setting
+    applied = {}
+    for key, value in updates.items():
+        spec = TUNABLE_FIELDS.get(key)
+        if spec is None:
+            continue
+        try:
+            if spec["type"] == "bool":
+                value = value if isinstance(value, bool) else str(value).lower() in ("true", "1")
+            elif spec["type"] == "int":
+                value = max(spec["min"], min(spec["max"], int(value)))
+            elif spec["type"] == "float":
+                value = max(spec["min"], min(spec["max"], float(value)))
+            setattr(_self, key, value)
+            set_setting(f"config_{key}", str(value))
+            applied[key] = value
+        except (ValueError, TypeError):
+            continue
+    return applied
+
+
+def restore_tunables():
+    """Restore persisted tunable config values from the database."""
+    import config as _self
+    from database import get_setting
+    for key, spec in TUNABLE_FIELDS.items():
+        saved = get_setting(f"config_{key}")
+        if saved is None:
+            continue
+        try:
+            if spec["type"] == "bool":
+                setattr(_self, key, saved.lower() in ("true", "1"))
+            elif spec["type"] == "int":
+                setattr(_self, key, int(saved))
+            elif spec["type"] == "float":
+                setattr(_self, key, float(saved))
+        except (ValueError, TypeError):
+            continue
+
+
+def switch_env(env: str):
+    """Switch active Kalshi environment and update resolved credentials."""
+    import config as _self
+    if env not in ("demo", "live"):
+        raise ValueError(f"Invalid env: {env}")
+    _self.KALSHI_ENV = env
+    if env == "live":
+        _self.KALSHI_API_KEY_ID = _self.KALSHI_LIVE_API_KEY_ID
+        _self.KALSHI_API_PRIVATE_KEY_PATH = _self.KALSHI_LIVE_PRIVATE_KEY_PATH
+    else:
+        _self.KALSHI_API_KEY_ID = _self.KALSHI_DEMO_API_KEY_ID
+        _self.KALSHI_API_PRIVATE_KEY_PATH = _self.KALSHI_DEMO_PRIVATE_KEY_PATH
+    return env

@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kalshi BTC Auto-Trader</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <style>
+    body { background: #0f1117; color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; }
+    .card { background: #1a1d2e; border: 1px solid #2d3148; border-radius: 12px; }
+    .pulse-green { animation: pulse-g 2s infinite; }
+    @keyframes pulse-g { 0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,.4)} 50%{box-shadow:0 0 0 8px rgba(34,197,94,0)} }
+    .pulse-red { animation: pulse-r 2s infinite; }
+    @keyframes pulse-r { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.4)} 50%{box-shadow:0 0 0 8px rgba(239,68,68,0)} }
+    #log-box { max-height: 340px; overflow-y: auto; font-family: 'Fira Code', 'Courier New', monospace; font-size: 0.78rem; }
+    #log-box::-webkit-scrollbar { width: 6px; }
+    #log-box::-webkit-scrollbar-thumb { background: #3b3f5c; border-radius: 3px; }
+  </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+
+  <!-- Header -->
+  <header class="flex items-center justify-between mb-8">
+    <div>
+      <h1 class="text-2xl font-bold tracking-tight">Kalshi BTC Auto-Trader</h1>
+      <p class="text-sm text-gray-500 mt-1">KXBTC15M Binary Markets</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <!-- Environment toggle -->
+      <div class="flex items-center bg-[#1a1d2e] border border-gray-700 rounded-lg overflow-hidden mr-2">
+        <button id="btn-demo" onclick="switchEnv('demo')"
+          class="px-3 py-1.5 text-xs font-semibold transition">Demo</button>
+        <button id="btn-live" onclick="switchEnv('live')"
+          class="px-3 py-1.5 text-xs font-semibold transition">Live</button>
+      </div>
+      <span id="status-dot" class="w-3 h-3 rounded-full bg-gray-600 inline-block"></span>
+      <span id="status-label" class="text-sm font-medium text-gray-400">Loading…</span>
+      <button id="btn-start" onclick="controlBot('start')"
+        class="ml-4 px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-500 text-sm font-semibold transition">
+        Start
+      </button>
+      <button id="btn-stop" onclick="controlBot('stop')"
+        class="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-sm font-semibold transition">
+        Stop
+      </button>
+    </div>
+  </header>
+
+  <!-- Bot Thinking Banner -->
+  <div id="thinking-banner" class="card p-4 mb-6 flex items-center gap-3 border-l-4 border-l-blue-500">
+    <div id="thinking-spinner" class="w-5 h-5 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0" style="display:none;"></div>
+    <div id="thinking-dot" class="w-3 h-3 rounded-full bg-gray-600 flex-shrink-0"></div>
+    <div class="flex-1 min-w-0">
+      <p id="thinking-text" class="text-sm font-medium text-gray-300 truncate">Idle</p>
+      <p id="thinking-detail" class="text-xs text-gray-500 mt-0.5 truncate"></p>
+    </div>
+    <span id="thinking-cycle" class="text-xs text-gray-600 font-mono flex-shrink-0">cycle 0</span>
+  </div>
+
+  <!-- Top Cards -->
+  <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+    <div class="card p-5">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Balance</p>
+      <p id="card-balance" class="text-2xl font-bold">—</p>
+    </div>
+    <div class="card p-5">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Day P&amp;L</p>
+      <p id="card-pnl" class="text-2xl font-bold">—</p>
+    </div>
+    <div class="card p-5">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Active Position</p>
+      <p id="card-position" class="text-lg font-semibold">—</p>
+    </div>
+    <div class="card p-5">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Current Market</p>
+      <p id="card-market" class="text-lg font-semibold truncate">—</p>
+    </div>
+  </div>
+
+  <!-- Alpha Engine Cards -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="card p-5">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Binance Lead</p>
+      <p id="card-delta" class="text-2xl font-bold font-mono">--</p>
+      <p class="text-xs text-gray-600 mt-1">
+        <span id="alpha-binance-status" class="inline-block w-2 h-2 rounded-full bg-gray-600 mr-1"></span>Binance
+        <span class="mx-2">|</span>
+        <span id="alpha-coinbase-status" class="inline-block w-2 h-2 rounded-full bg-gray-600 mr-1"></span>Coinbase
+      </p>
+    </div>
+    <div class="card p-5">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Proj. Settlement</p>
+      <p id="card-settlement" class="text-2xl font-bold font-mono">--</p>
+    </div>
+    <div class="card p-5">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Alpha Override</p>
+      <p id="card-alpha-override" class="text-lg font-semibold text-gray-500">None</p>
+    </div>
+  </div>
+
+  <!-- Agent Insight -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="card p-5 md:col-span-2">
+      <div class="flex items-center justify-between mb-3">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">Agent Insight</p>
+        <span id="agent-decision" class="text-xs font-bold px-2 py-0.5 rounded bg-gray-700">—</span>
+      </div>
+      <p id="agent-reasoning" class="text-sm text-gray-300 leading-relaxed min-h-[48px]">Waiting for first analysis…</p>
+    </div>
+    <div class="card p-5 flex flex-col justify-between">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">Confidence</p>
+      <div class="w-full bg-gray-700 rounded-full h-5 overflow-hidden">
+        <div id="confidence-bar" class="h-5 rounded-full bg-blue-500 transition-all duration-500" style="width:0%"></div>
+      </div>
+      <p id="confidence-label" class="text-right text-sm mt-1 font-mono text-gray-400">0%</p>
+      <p class="text-xs text-gray-600 mt-2">Last action: <span id="last-action" class="text-gray-400">—</span></p>
+    </div>
+  </div>
+
+  <!-- Chat with Agent -->
+  <div class="card p-5 mb-6">
+    <p class="text-xs text-gray-500 uppercase tracking-wide mb-3">Ask the Agent</p>
+    <div id="chat-messages" class="bg-[#12141f] rounded-lg p-3 mb-3 min-h-[60px] max-h-[240px] overflow-y-auto text-sm text-gray-300 space-y-2"></div>
+    <form id="chat-form" class="flex gap-2" onsubmit="sendChat(event)">
+      <input id="chat-input" type="text" placeholder="Ask about markets, strategy, recent decisions…"
+        class="flex-1 bg-[#12141f] border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500" />
+      <button type="submit" id="chat-btn"
+        class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-semibold transition whitespace-nowrap">
+        Send
+      </button>
+    </form>
+  </div>
+
+  <!-- Configuration Panel -->
+  <div class="card p-5 mb-6">
+    <div class="flex items-center justify-between mb-4">
+      <p class="text-xs text-gray-500 uppercase tracking-wide">Trading Configuration</p>
+      <button onclick="saveConfig()" id="cfg-save-btn"
+        class="px-3 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-xs font-semibold transition">
+        Save All
+      </button>
+    </div>
+    <div id="cfg-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <!-- Populated by JS -->
+    </div>
+    <p id="cfg-status" class="text-xs text-gray-600 mt-3"></p>
+  </div>
+
+  <!-- Live Log -->
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-3">
+      <p class="text-xs text-gray-500 uppercase tracking-wide">Live Event Log</p>
+      <span class="text-xs text-gray-600 font-mono" id="log-cycle">cycle 0</span>
+    </div>
+    <div id="log-box" class="bg-[#12141f] rounded-lg p-3 text-gray-400"></div>
+  </div>
+
+  <footer class="text-center text-xs text-gray-700 mt-8">
+    Trading involves risk. Use at your own discretion. TRADING_ENABLED = <span id="footer-enabled" class="font-mono">?</span>
+  </footer>
+
+  <script>
+    // Poll status every 2 seconds
+    async function pollStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const d = await res.json();
+
+        // Status indicator
+        const dot = document.getElementById('status-dot');
+        const label = document.getElementById('status-label');
+        if (d.running) {
+          dot.className = 'w-3 h-3 rounded-full bg-green-500 inline-block pulse-green';
+          label.textContent = 'Running';
+          label.className = 'text-sm font-medium text-green-400';
+        } else {
+          dot.className = 'w-3 h-3 rounded-full bg-red-500 inline-block pulse-red';
+          label.textContent = 'Stopped';
+          label.className = 'text-sm font-medium text-red-400';
+        }
+
+        // Cards
+        document.getElementById('card-balance').textContent = d.balance;
+        const pnlEl = document.getElementById('card-pnl');
+        const pnl = typeof d.day_pnl === 'number' ? d.day_pnl : parseFloat(d.day_pnl) || 0;
+        const pnlSign = pnl >= 0 ? '+' : '';
+        pnlEl.textContent = pnlSign + '$' + Math.abs(pnl).toFixed(2);
+        pnlEl.className = 'text-2xl font-bold ' + (pnl < 0 ? 'text-red-400' : 'text-green-400');
+
+        document.getElementById('card-position').textContent = d.position;
+        document.getElementById('card-market').textContent = d.market;
+
+        // Agent
+        const decEl = document.getElementById('agent-decision');
+        decEl.textContent = d.decision;
+        if (d.decision === 'BUY_YES') { decEl.className = 'text-xs font-bold px-2 py-0.5 rounded bg-green-800 text-green-300'; }
+        else if (d.decision === 'BUY_NO') { decEl.className = 'text-xs font-bold px-2 py-0.5 rounded bg-red-800 text-red-300'; }
+        else { decEl.className = 'text-xs font-bold px-2 py-0.5 rounded bg-gray-700 text-gray-300'; }
+
+        document.getElementById('agent-reasoning').textContent = d.reasoning || '—';
+
+        const conf = Math.round((d.confidence || 0) * 100);
+        const bar = document.getElementById('confidence-bar');
+        bar.style.width = conf + '%';
+        bar.className = 'h-5 rounded-full transition-all duration-500 ' +
+          (conf >= 75 ? 'bg-green-500' : conf >= 50 ? 'bg-yellow-500' : 'bg-red-500');
+        document.getElementById('confidence-label').textContent = conf + '%';
+
+        document.getElementById('last-action').textContent = d.last_action;
+        document.getElementById('footer-enabled').textContent = d.trading_enabled ? 'true' : 'false';
+        document.getElementById('log-cycle').textContent = 'cycle ' + d.cycle_count;
+
+        // Thinking banner
+        const banner = document.getElementById('thinking-banner');
+        const spinner = document.getElementById('thinking-spinner');
+        const thinkDot = document.getElementById('thinking-dot');
+        const thinkText = document.getElementById('thinking-text');
+        const thinkDetail = document.getElementById('thinking-detail');
+        document.getElementById('thinking-cycle').textContent = 'cycle ' + d.cycle_count;
+
+        if (d.running) {
+          spinner.style.display = 'block';
+          thinkDot.style.display = 'none';
+          const action = d.last_action || 'Scanning...';
+          thinkText.textContent = action;
+
+          // Color the left border based on action type
+          banner.className = banner.className.replace(/border-l-\S+/, '');
+          if (action.includes('Placed') || action.includes('Filled')) {
+            banner.classList.add('border-l-green-500');
+            thinkText.className = 'text-sm font-medium text-green-400 truncate';
+          } else if (action.includes('guard') || action.includes('Guard') || action.includes('too cheap')) {
+            banner.classList.add('border-l-yellow-500');
+            thinkText.className = 'text-sm font-medium text-yellow-400 truncate';
+          } else if (action.includes('Error') || action.includes('rejected')) {
+            banner.classList.add('border-l-red-500');
+            thinkText.className = 'text-sm font-medium text-red-400 truncate';
+          } else {
+            banner.classList.add('border-l-blue-500');
+            thinkText.className = 'text-sm font-medium text-gray-300 truncate';
+          }
+
+          // Detail line: decision + override info
+          let detail = '';
+          if (d.alpha_override) detail += 'Alpha: ' + d.alpha_override + '  ';
+          if (d.decision && d.decision !== '—') detail += 'Decision: ' + d.decision + ' (' + Math.round((d.confidence || 0) * 100) + '%)';
+          if (!d.trading_enabled) detail += '  [TRADING DISABLED]';
+          thinkDetail.textContent = detail;
+        } else {
+          spinner.style.display = 'none';
+          thinkDot.style.display = 'block';
+          thinkDot.className = 'w-3 h-3 rounded-full bg-gray-600 flex-shrink-0';
+          thinkText.textContent = 'Bot stopped';
+          thinkText.className = 'text-sm font-medium text-gray-500 truncate';
+          thinkDetail.textContent = '';
+          banner.className = banner.className.replace(/border-l-\S+/, '');
+          banner.classList.add('border-l-gray-600');
+        }
+
+        // Alpha Engine
+        if (d.alpha) {
+          const delta = d.alpha.latency_delta || 0;
+          const deltaEl = document.getElementById('card-delta');
+          const sign = delta >= 0 ? '+' : '';
+          deltaEl.textContent = sign + '$' + Math.abs(delta).toFixed(2);
+          deltaEl.className = 'text-2xl font-bold font-mono ' + (delta >= 0 ? 'text-green-400' : 'text-red-400');
+
+          const settleEl = document.getElementById('card-settlement');
+          const settle = d.alpha.projected_settlement || 0;
+          settleEl.textContent = settle > 0 ? '$' + settle.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',') : '--';
+
+          document.getElementById('alpha-binance-status').className =
+            'inline-block w-2 h-2 rounded-full mr-1 ' + (d.alpha.binance_connected ? 'bg-green-500' : 'bg-red-500');
+          document.getElementById('alpha-coinbase-status').className =
+            'inline-block w-2 h-2 rounded-full mr-1 ' + (d.alpha.coinbase_connected ? 'bg-green-500' : 'bg-red-500');
+        }
+
+        const overrideEl = document.getElementById('card-alpha-override');
+        if (d.alpha_override) {
+          overrideEl.textContent = d.alpha_override;
+          overrideEl.className = 'text-lg font-semibold ' +
+            (d.alpha_override.includes('YES') ? 'text-green-400' : 'text-red-400');
+        } else {
+          overrideEl.textContent = 'None';
+          overrideEl.className = 'text-lg font-semibold text-gray-500';
+        }
+
+        // Environment toggle styling
+        const btnDemo = document.getElementById('btn-demo');
+        const btnLive = document.getElementById('btn-live');
+        if (d.env === 'live') {
+          btnLive.className = 'px-3 py-1.5 text-xs font-semibold transition bg-red-600 text-white';
+          btnDemo.className = 'px-3 py-1.5 text-xs font-semibold transition text-gray-500 hover:text-gray-300';
+        } else {
+          btnDemo.className = 'px-3 py-1.5 text-xs font-semibold transition bg-blue-600 text-white';
+          btnLive.className = 'px-3 py-1.5 text-xs font-semibold transition text-gray-500 hover:text-gray-300';
+        }
+      } catch (e) {
+        console.error('Poll error', e);
+      }
+    }
+
+    // Poll logs every 3 seconds
+    async function pollLogs() {
+      try {
+        const res = await fetch('/api/logs');
+        const logs = await res.json();
+        const box = document.getElementById('log-box');
+        box.innerHTML = logs.map(l => {
+          const color = l.level === 'ERROR' ? 'text-red-400'
+            : l.level === 'TRADE' ? 'text-green-400'
+            : l.level === 'GUARD' ? 'text-yellow-400'
+            : l.level === 'AGENT' ? 'text-blue-400'
+            : l.level === 'ALPHA' ? 'text-purple-400'
+            : 'text-gray-500';
+          const ts = l.ts ? l.ts.substring(11, 19) : '';
+          return `<div class="${color}"><span class="text-gray-600">${ts}</span> [${l.level}] ${escapeHtml(l.message)}</div>`;
+        }).join('');
+      } catch(e) {
+        console.error('Log poll error', e);
+      }
+    }
+
+    function escapeHtml(t) {
+      const d = document.createElement('div');
+      d.textContent = t;
+      return d.innerHTML;
+    }
+
+    async function sendChat(e) {
+      e.preventDefault();
+      const input = document.getElementById('chat-input');
+      const msg = input.value.trim();
+      if (!msg) return;
+      input.value = '';
+
+      const box = document.getElementById('chat-messages');
+      box.innerHTML += `<div class="text-blue-400"><span class="text-gray-600 font-semibold">You:</span> ${escapeHtml(msg)}</div>`;
+      box.scrollTop = box.scrollHeight;
+
+      const btn = document.getElementById('chat-btn');
+      btn.disabled = true;
+      btn.textContent = '…';
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: msg }),
+        });
+        const data = await res.json();
+        box.innerHTML += `<div class="text-gray-300"><span class="text-purple-400 font-semibold">Agent:</span> ${escapeHtml(data.reply)}</div>`;
+      } catch (err) {
+        box.innerHTML += `<div class="text-red-400">Error: ${escapeHtml(err.message)}</div>`;
+      }
+      btn.disabled = false;
+      btn.textContent = 'Send';
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function controlBot(action) {
+      await fetch('/api/' + action, { method: 'POST' });
+      setTimeout(pollStatus, 300);
+    }
+
+    async function switchEnv(env) {
+      if (!confirm(`Switch to ${env.toUpperCase()} environment? This will stop the bot if running.`)) return;
+      await fetch('/api/env', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ env }),
+      });
+      setTimeout(pollStatus, 300);
+    }
+
+    // --- Config panel ---
+    const LABELS = {
+      TRADING_ENABLED: 'Trading Enabled',
+      ORDER_SIZE: 'Order Size',
+      MAX_POSITION_SIZE: 'Max Position Size',
+      MAX_DAILY_LOSS: 'Max Daily Loss ($)',
+      MIN_SECONDS_TO_CLOSE: 'Min Secs to Close',
+      MAX_SPREAD_CENTS: 'Max Spread (cents)',
+      MIN_AGENT_CONFIDENCE: 'Min Agent Confidence',
+      MIN_CONTRACT_PRICE: 'Min Contract Price (cents)',
+      POLL_INTERVAL_SECONDS: 'Poll Interval (secs)',
+      DELTA_THRESHOLD: 'Delta Threshold ($)',
+      EXTREME_DELTA_THRESHOLD: 'Extreme Delta ($)',
+      ANCHOR_SECONDS_THRESHOLD: 'Anchor Secs Threshold',
+    };
+
+    let _cfgMeta = {};  // cache config metadata for auto-save
+
+    async function loadConfig() {
+      try {
+        const res = await fetch('/api/config');
+        const cfg = await res.json();
+        _cfgMeta = cfg;
+        const grid = document.getElementById('cfg-grid');
+        grid.innerHTML = '';
+        for (const [key, spec] of Object.entries(cfg)) {
+          const label = LABELS[key] || key;
+          let input;
+          if (spec.type === 'bool') {
+            input = `<label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="cfg-${key}" data-key="${key}" ${spec.value ? 'checked' : ''} class="sr-only peer cfg-auto" />
+              <div class="w-9 h-5 bg-gray-600 peer-checked:bg-green-500 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+            </label>`;
+          } else {
+            const step = spec.type === 'float' ? '0.01' : '1';
+            input = `<input type="number" id="cfg-${key}" data-key="${key}" value="${spec.value}" min="${spec.min}" max="${spec.max}" step="${step}"
+              class="w-full bg-[#12141f] border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-blue-500 cfg-auto" />`;
+          }
+          grid.innerHTML += `<div>
+            <label class="text-xs text-gray-400 block mb-1">${label}</label>
+            ${input}
+          </div>`;
+        }
+        // Attach auto-save listeners
+        document.querySelectorAll('.cfg-auto').forEach(el => {
+          el.addEventListener('change', () => autoSaveField(el));
+        });
+      } catch (e) {
+        console.error('Config load error', e);
+      }
+    }
+
+    async function autoSaveField(el) {
+      const key = el.dataset.key;
+      const spec = _cfgMeta[key];
+      if (!spec) return;
+      let value;
+      if (spec.type === 'bool') {
+        value = el.checked;
+      } else if (spec.type === 'float') {
+        value = parseFloat(el.value);
+      } else {
+        value = parseInt(el.value, 10);
+      }
+      const statusEl = document.getElementById('cfg-status');
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [key]: value }),
+        });
+        const data = await res.json();
+        statusEl.textContent = 'Saved: ' + (LABELS[key] || key) + ' = ' + value;
+        statusEl.className = 'text-xs text-green-500 mt-3';
+        setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'text-xs text-gray-600 mt-3'; }, 3000);
+      } catch (e) {
+        statusEl.textContent = 'Error saving ' + (LABELS[key] || key);
+        statusEl.className = 'text-xs text-red-500 mt-3';
+      }
+    }
+
+    async function saveConfig() {
+      const statusEl = document.getElementById('cfg-status');
+      const btn = document.getElementById('cfg-save-btn');
+      btn.textContent = 'Saving…';
+      btn.disabled = true;
+      try {
+        const updates = {};
+        for (const key of Object.keys(_cfgMeta)) {
+          const el = document.getElementById('cfg-' + key);
+          if (!el) continue;
+          if (_cfgMeta[key].type === 'bool') {
+            updates[key] = el.checked;
+          } else if (_cfgMeta[key].type === 'float') {
+            updates[key] = parseFloat(el.value);
+          } else {
+            updates[key] = parseInt(el.value, 10);
+          }
+        }
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updates),
+        });
+        const data = await res.json();
+        statusEl.textContent = 'All settings saved';
+        statusEl.className = 'text-xs text-green-500 mt-3';
+        setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'text-xs text-gray-600 mt-3'; }, 3000);
+      } catch (e) {
+        statusEl.textContent = 'Error saving config';
+        statusEl.className = 'text-xs text-red-500 mt-3';
+      }
+      btn.textContent = 'Save All';
+      btn.disabled = false;
+    }
+
+    // Start polling
+    setInterval(pollStatus, 2000);
+    setInterval(pollLogs, 3000);
+    pollStatus();
+    pollLogs();
+    loadConfig();
+  </script>
+</body>
+</html>
