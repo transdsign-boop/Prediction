@@ -412,9 +412,16 @@ class TradingBot:
             # Settled P&L: (balance + exposure) - (start_balance + start_exposure)
             # Buying a contract moves money from balance→exposure (net zero).
             # Settlement removes exposure and changes balance by payout (net = profit/loss).
-            self.status["day_pnl"] = (
+            settled_pnl = (
                 (balance + total_exposure) - (self._start_balance + self._start_exposure)
             )
+            self.status["day_pnl"] = settled_pnl
+
+            # Daily loss circuit breaker
+            if settled_pnl < -config.MAX_DAILY_LOSS:
+                log_event("GUARD", f"Daily loss guard: ${settled_pnl:.2f} exceeds -${config.MAX_DAILY_LOSS:.2f} limit")
+                self.status["last_action"] = f"Daily loss limit hit (${settled_pnl:.2f})"
+                return
 
             # 4. Time guard
             if not self._time_guard(market):
@@ -567,6 +574,12 @@ class TradingBot:
             if effective_price < config.MIN_CONTRACT_PRICE:
                 log_event("GUARD", f"Price guard: {effective_price}c < {config.MIN_CONTRACT_PRICE}c min")
                 self.status["last_action"] = "Price too cheap — holding"
+                return
+
+            # Portfolio-wide exposure guard (total $ at risk across all markets)
+            if total_exposure >= config.MAX_TOTAL_EXPOSURE:
+                log_event("GUARD", f"Exposure guard: ${total_exposure:.2f} >= ${config.MAX_TOTAL_EXPOSURE:.2f} limit")
+                self.status["last_action"] = f"Max exposure reached (${total_exposure:.2f})"
                 return
 
             # Check current position to avoid exceeding MAX_POSITION_SIZE

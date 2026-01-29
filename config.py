@@ -27,6 +27,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # --- Trading Rules (mutable at runtime) ---
 MAX_POSITION_SIZE = int(os.getenv("MAX_POSITION_SIZE", "50"))
+MAX_TOTAL_EXPOSURE = float(os.getenv("MAX_TOTAL_EXPOSURE", "10.00"))  # max $ at risk across all markets
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "25.00"))
 ORDER_SIZE = int(os.getenv("ORDER_SIZE", "10"))
 TRADING_ENABLED = os.getenv("TRADING_ENABLED", "false").lower() == "true"
@@ -54,6 +55,7 @@ TUNABLE_FIELDS = {
     "TRADING_ENABLED":      {"type": "bool"},
     "ORDER_SIZE":           {"type": "int",   "min": 1,  "max": 100},
     "MAX_POSITION_SIZE":    {"type": "int",   "min": 1,  "max": 500},
+    "MAX_TOTAL_EXPOSURE":   {"type": "float", "min": 1,  "max": 500},
     "MAX_DAILY_LOSS":       {"type": "float", "min": 1,  "max": 1000},
     "MIN_SECONDS_TO_CLOSE": {"type": "int",   "min": 30, "max": 600},
     "MAX_SPREAD_CENTS":     {"type": "int",   "min": 1,  "max": 100},
