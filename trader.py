@@ -285,8 +285,9 @@ class TradingBot:
             log_event("GUARD", "Spread guard: empty orderbook")
             return False, 0, 100
 
-        best_bid = yes_orders[0][0] if yes_orders else 0
-        best_ask = (100 - no_orders[0][0]) if no_orders else 100
+        # Use max() — Kalshi may return levels in any order
+        best_bid = max(p for p, q in yes_orders) if yes_orders else 0
+        best_ask = (100 - max(p for p, q in no_orders)) if no_orders else 100
 
         # Two-sided market: enforce max spread
         if yes_orders and no_orders:
@@ -408,15 +409,17 @@ class TradingBot:
             ob = await self.fetch_orderbook(ticker)
             spread_ok, best_bid, best_ask = self._spread_guard(ob)
 
-            # Store orderbook snapshot for dashboard
+            # Store orderbook snapshot for dashboard (sorted best-first)
             yes_orders = ob.get("yes", []) if isinstance(ob.get("yes"), list) else []
             no_orders = ob.get("no", []) if isinstance(ob.get("no"), list) else []
+            yes_sorted = sorted(yes_orders, key=lambda x: x[0], reverse=True)
+            no_sorted = sorted(no_orders, key=lambda x: x[0], reverse=True)
             self.status["orderbook"] = {
                 "best_bid": best_bid,
                 "best_ask": best_ask,
                 "spread": best_ask - best_bid,
-                "yes_levels": yes_orders[:5],   # top 5 YES bid levels [[price, qty], ...]
-                "no_levels": no_orders[:5],      # top 5 NO bid levels [[price, qty], ...]
+                "yes_levels": yes_sorted[:5],   # top 5 YES bid levels (best first)
+                "no_levels": no_sorted[:5],      # top 5 NO bid levels (best first)
                 "yes_depth": sum(q for _, q in yes_orders),
                 "no_depth": sum(q for _, q in no_orders),
             }
