@@ -93,9 +93,9 @@ class AlphaMonitor:
             try:
                 async with websockets.connect(
                     self.BINANCE_WS_URL,
-                    ping_interval=20,
-                    ping_timeout=10,
-                    close_timeout=5,
+                    ping_interval=30,
+                    ping_timeout=20,
+                    close_timeout=10,
                 ) as ws:
                     self.binance_connected = True
                     delay = self.RECONNECT_BASE_DELAY
@@ -134,9 +134,9 @@ class AlphaMonitor:
             try:
                 async with websockets.connect(
                     self.COINBASE_WS_URL,
-                    ping_interval=20,
-                    ping_timeout=10,
-                    close_timeout=5,
+                    ping_interval=30,
+                    ping_timeout=20,
+                    close_timeout=10,
                 ) as ws:
                     subscribe_msg = json.dumps({
                         "type": "subscribe",
