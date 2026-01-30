@@ -40,6 +40,7 @@ MIN_SECONDS_TO_CLOSE = 90
 MAX_SPREAD_CENTS = 25
 MIN_AGENT_CONFIDENCE = 0.75
 MIN_CONTRACT_PRICE = 5
+STOP_LOSS_CENTS = 15              # exit position if down this many cents/contract
 
 # Alpha Engine thresholds
 DELTA_THRESHOLD = 20              # USD — front-run trigger
@@ -61,6 +62,7 @@ TUNABLE_FIELDS = {
     "MAX_SPREAD_CENTS":     {"type": "int",   "min": 1,  "max": 100},
     "MIN_AGENT_CONFIDENCE": {"type": "float", "min": 0,  "max": 1},
     "MIN_CONTRACT_PRICE":   {"type": "int",   "min": 1,  "max": 55},
+    "STOP_LOSS_CENTS":      {"type": "int",   "min": 0,  "max": 50},
     "POLL_INTERVAL_SECONDS":{"type": "int",   "min": 5,  "max": 120},
     "DELTA_THRESHOLD":          {"type": "int",   "min": 5,   "max": 200},
     "EXTREME_DELTA_THRESHOLD":  {"type": "int",   "min": 10,  "max": 500},

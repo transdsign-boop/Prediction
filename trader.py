@@ -262,6 +262,42 @@ class TradingBot:
             log_event("ERROR", f"Order rejected: {exc.response.text[:200]}")
             return None
 
+    async def close_position(
+        self, ticker: str, side: str, price_cents: int, quantity: int
+    ) -> dict | None:
+        """Sell an existing position at the given price."""
+        body = {
+            "ticker": ticker,
+            "action": "sell",
+            "side": side.lower(),
+            "type": "limit",
+            "yes_price" if side.lower() == "yes" else "no_price": price_cents,
+            "count": quantity,
+        }
+        try:
+            result = await self._post("/portfolio/orders", body)
+            order = result.get("order", {})
+            order_id = order.get("order_id", "unknown")
+            status = order.get("status", "")
+            filled_count = order.get("filled_count", 0)
+
+            log_event("TRADE", f"SL SELL {side} @ {price_cents}c x{quantity} on {ticker} (status={status})")
+
+            if filled_count > 0:
+                record_trade(
+                    market_id=ticker,
+                    side=side,
+                    action="SELL",
+                    price=price_cents / 100.0,
+                    quantity=filled_count,
+                    order_id=order_id,
+                )
+                log_event("TRADE", f"SL filled {filled_count}x {side} @ {price_cents}c on {ticker}")
+            return order
+        except httpx.HTTPStatusError as exc:
+            log_event("ERROR", f"SL order rejected: {exc.response.text[:200]}")
+            return None
+
     # ------------------------------------------------------------------
     # Safety layer ("reflexes")
     # ------------------------------------------------------------------
@@ -462,6 +498,22 @@ class TradingBot:
                 else:
                     mark_to_market = 0
                 self.status["position_pnl"] = (mark_to_market - pos_exposure_cents) / 100.0
+
+                # Stop-loss check: exit if loss per contract exceeds threshold
+                if config.STOP_LOSS_CENTS > 0 and abs(pos_qty) > 0 and config.TRADING_ENABLED:
+                    loss_per_contract = (pos_exposure_cents - mark_to_market) / abs(pos_qty)
+                    if loss_per_contract >= config.STOP_LOSS_CENTS:
+                        sell_side = "yes" if pos_qty > 0 else "no"
+                        sell_price = best_bid if pos_qty > 0 else (100 - best_ask)
+                        sell_price = max(1, min(99, sell_price))
+                        sell_qty = abs(pos_qty)
+                        log_event("GUARD", f"Stop-loss triggered: down {loss_per_contract:.0f}c/contract (limit {config.STOP_LOSS_CENTS}c)")
+                        order = await self.close_position(ticker, sell_side, sell_price, sell_qty)
+                        if order:
+                            self.status["last_action"] = f"SL: sold {sell_qty}x {sell_side.upper()} @ {sell_price}c"
+                        else:
+                            self.status["last_action"] = "SL: sell order rejected"
+                        return
             else:
                 self.status["position_pnl"] = 0.0
 
