@@ -54,14 +54,12 @@ async def api_status():
     pos = bot.status.get("active_position")
     pos_label = "None"
     if pos:
-        yes_q = pos.get("yes_quantity", pos.get("position", 0))
-        no_q = pos.get("no_quantity", 0)
-        if yes_q:
-            avg = pos.get("yes_average_price", 0)
-            pos_label = f"{yes_q}x YES @ {avg}"
-        elif no_q:
-            avg = pos.get("no_average_price", 0)
-            pos_label = f"{no_q}x NO @ {avg}"
+        pos_val = pos.get("position", 0) or 0
+        exposure = pos.get("market_exposure", 0) or 0
+        if pos_val > 0:
+            pos_label = f"{pos_val}x YES (${exposure/100:.2f})"
+        elif pos_val < 0:
+            pos_label = f"{abs(pos_val)}x NO (${exposure/100:.2f})"
 
     return {
         "running": bot.status["running"],

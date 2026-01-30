@@ -613,8 +613,9 @@ class TradingBot:
                     strike = self._extract_strike(market)
                     if strike and strike > 0:
                         projection_wins = self.alpha.get_settlement_projection(strike, secs_left)
-                        yes_qty = my_pos.get("yes_quantity", my_pos.get("position", 0))
-                        no_qty = my_pos.get("no_quantity", 0)
+                        pos_val = my_pos.get("position", 0) or 0
+                        yes_qty = pos_val if pos_val > 0 else 0
+                        no_qty = abs(pos_val) if pos_val < 0 else 0
                         if yes_qty and not projection_wins:
                             alpha_override = "BUY_NO"
                             log_event("ALPHA", f"Anchor defense: proj {self.alpha.projected_settlement:.2f} < strike {strike}, forcing BUY_NO")
@@ -661,7 +662,9 @@ class TradingBot:
                     self.status["last_action"] = f"Agent: {action} ({confidence:.0%})"
                     return
 
-            # 8. Execute
+            # 8. Execute — cancel any stale resting orders first to prevent accumulation
+            await self.cancel_all_orders()
+
             side = "yes" if action == "BUY_YES" else "no"
 
             # Aggressive pricing on extreme momentum, else standard limit
@@ -704,13 +707,15 @@ class TradingBot:
             order_budget = balance * config.ORDER_SIZE_PCT / 100.0
             order_size = max(1, int(order_budget / (price_cents / 100.0))) if price_cents > 0 else 1
 
+            # Re-fetch positions after cancel (fills may have occurred since initial fetch)
+            positions = await self.fetch_positions()
+            my_pos = next((p for p in positions if p.get("ticker") == ticker), None)
+            self.status["active_position"] = my_pos
+
             # Check current position to avoid exceeding max
             current_qty = 0
             if my_pos:
-                current_qty = (my_pos.get("yes_quantity", 0) or 0) + (my_pos.get("no_quantity", 0) or 0)
-                if current_qty < 0:
-                    current_qty = my_pos.get("position", 0) or 0
-                    current_qty = abs(current_qty)
+                current_qty = abs(my_pos.get("position", 0) or 0)
             remaining_capacity = max_position - current_qty
             if remaining_capacity <= 0:
                 log_event("GUARD", f"Position guard: {current_qty}/{max_position} contracts ({config.MAX_POSITION_PCT:.1f}% of balance)")
