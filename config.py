@@ -1,14 +1,40 @@
 import os
+import base64
+import tempfile
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- Handle base64-encoded private keys (for Fly.io deployment) ---
+def _decode_pem_if_needed(path_env_var: str, b64_env_var: str) -> str:
+    """
+    If a base64-encoded PEM is provided via env var, decode it to a temp file.
+    Otherwise, use the path from the environment.
+    """
+    b64_key = os.getenv(b64_env_var)
+    if b64_key:
+        # Decode base64 and write to temporary file
+        pem_content = base64.b64decode(b64_key)
+        temp_file = tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.pem')
+        temp_file.write(pem_content)
+        temp_file.close()
+        return temp_file.name
+    else:
+        # Use the path from environment
+        return os.getenv(path_env_var, "")
+
 # --- Per-environment Kalshi credentials ---
 KALSHI_LIVE_API_KEY_ID = os.getenv("KALSHI_LIVE_API_KEY_ID", "")
-KALSHI_LIVE_PRIVATE_KEY_PATH = os.getenv("KALSHI_LIVE_PRIVATE_KEY_PATH", "./kalshi_private_key.pem")
+KALSHI_LIVE_PRIVATE_KEY_PATH = _decode_pem_if_needed(
+    "KALSHI_LIVE_PRIVATE_KEY_PATH",
+    "KALSHI_LIVE_PRIVATE_KEY_B64"
+)
 
 KALSHI_DEMO_API_KEY_ID = os.getenv("KALSHI_DEMO_API_KEY_ID", "")
-KALSHI_DEMO_PRIVATE_KEY_PATH = os.getenv("KALSHI_DEMO_PRIVATE_KEY_PATH", "./kalshi_demo_private_key.pem")
+KALSHI_DEMO_PRIVATE_KEY_PATH = _decode_pem_if_needed(
+    "KALSHI_DEMO_PRIVATE_KEY_PATH",
+    "KALSHI_DEMO_PRIVATE_KEY_B64"
+)
 
 # Active environment: "demo" or "live"
 KALSHI_ENV = os.getenv("KALSHI_ENV", "demo")
