@@ -78,6 +78,7 @@ DELTA_THRESHOLD = 20              # USD — front-run trigger (momentum deviatio
 EXTREME_DELTA_THRESHOLD = 50      # USD — aggressive execution trigger
 ANCHOR_SECONDS_THRESHOLD = 60     # seconds — anchor defense trigger
 LEAD_LAG_THRESHOLD = 15           # USD — lead-lag signal trigger (global price vs strike)
+LEAD_LAG_ENABLED = os.getenv("LEAD_LAG_ENABLED", "false").lower() == "true"  # Enable/disable lead-lag signal
 
 # Paper trading (demo mode uses live API but simulates trades)
 PAPER_STARTING_BALANCE = float(os.getenv("PAPER_STARTING_BALANCE", "100.0"))
@@ -108,6 +109,7 @@ TUNABLE_FIELDS = {
     "EXTREME_DELTA_THRESHOLD":  {"type": "int",   "min": 10,  "max": 500},
     "ANCHOR_SECONDS_THRESHOLD": {"type": "int",   "min": 15,  "max": 120},
     "LEAD_LAG_THRESHOLD":       {"type": "int",   "min": 5,   "max": 200},
+    "LEAD_LAG_ENABLED":         {"type": "bool"},
     "PAPER_STARTING_BALANCE":   {"type": "float", "min": 10,  "max": 100000},
 }
 

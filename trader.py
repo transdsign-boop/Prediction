@@ -875,7 +875,7 @@ class TradingBot:
                 # Uses all 6 exchanges to detect when BTC has moved but Kalshi
                 # contracts haven't repriced yet (the "60-second lag" play).
                 strike = self._extract_strike(market)
-                if strike and strike > 0:
+                if config.LEAD_LAG_ENABLED and strike and strike > 0:
                     signal, diff = self.alpha.get_signal(strike)
                     self.status["alpha_signal"] = signal
                     self.status["alpha_signal_diff"] = diff
