@@ -77,9 +77,9 @@ EXCHANGE_CONFIG = {
         'weight': 0.12,
         'tier': 2,
         'role': 'lead',
-        'symbol': 'BTC/USDT:USDT',
+        'symbol': 'BTC-USDT-SWAP',  # OKX uses this format for perpetual swaps
         'label': 'OKX Futures',
-        'ccxt_options': {'defaultType': 'swap'},
+        'ccxt_options': {},
     },
     'kraken': {
         'weight': 0.08,
