@@ -6,3 +6,4 @@ anthropic
 python-dotenv
 cryptography
 websockets
+ccxt>=4.0

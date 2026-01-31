@@ -845,6 +845,17 @@ class TradingBot:
                 "last_price": live_tkr.get("yes_bid", market.get("last_price", 0)) if live_tkr else market.get("last_price", 0),
                 "volume": live_tkr.get("volume", market.get("volume", 0)) if live_tkr else market.get("volume", 0),
             }
+            # Enrich agent context with multi-exchange data
+            if self.alpha:
+                gwp = self.alpha.get_weighted_global_price()
+                if gwp > 0:
+                    market_data["weighted_btc_price"] = round(gwp, 2)
+                    market_data["lead_lag_spread"] = round(self.alpha.lead_lag_spread, 2)
+                    lead_p, settle_p, _ = self.alpha.get_lead_vs_settlement()
+                    if lead_p > 0:
+                        market_data["lead_price"] = round(lead_p, 2)
+                    if settle_p > 0:
+                        market_data["settlement_price"] = round(settle_p, 2)
 
             # ── ALPHA ENGINE OVERRIDES ──────────────────────────────
             alpha_override = None
@@ -857,19 +868,36 @@ class TradingBot:
                 self.status["alpha_projected_settlement"] = self.alpha.projected_settlement
                 self.status["alpha_binance_connected"] = True
                 self.status["alpha_coinbase_connected"] = True
+                self.status["alpha_weighted_price"] = self.alpha.get_weighted_global_price()
+                self.status["alpha_lead_lag_spread"] = self.alpha.lead_lag_spread
+
+                # Override 0: Lead-Lag Signal (weighted global price vs strike)
+                # Uses all 6 exchanges to detect when BTC has moved but Kalshi
+                # contracts haven't repriced yet (the "60-second lag" play).
+                strike = self._extract_strike(market)
+                if strike and strike > 0:
+                    signal, diff = self.alpha.get_signal(strike)
+                    self.status["alpha_signal"] = signal
+                    self.status["alpha_signal_diff"] = diff
+                    if signal == "BULLISH":
+                        alpha_override = "BUY_YES"
+                        log_event("ALPHA", f"Lead-lag BUY_YES: global ${self.alpha.get_weighted_global_price():.2f} > strike ${strike:.2f} by ${diff:.2f}")
+                    elif signal == "BEARISH":
+                        alpha_override = "BUY_NO"
+                        log_event("ALPHA", f"Lead-lag BUY_NO: global ${self.alpha.get_weighted_global_price():.2f} < strike ${strike:.2f} by ${abs(diff):.2f}")
 
                 # Override 1: Front-Run (delta momentum — deviation from rolling baseline)
-                # Positive momentum = Binance leading up (bullish), Negative = leading down (bearish)
-                if momentum > config.DELTA_THRESHOLD:
-                    alpha_override = "BUY_YES"
-                    log_event("ALPHA", f"Front-run BUY_YES: momentum={momentum:+.2f} > {config.DELTA_THRESHOLD}")
-                elif momentum < -config.DELTA_THRESHOLD:
-                    alpha_override = "BUY_NO"
-                    log_event("ALPHA", f"Front-run BUY_NO: momentum={momentum:+.2f} < -{config.DELTA_THRESHOLD}")
+                # Only fires if lead-lag didn't already trigger
+                if not alpha_override:
+                    if momentum > config.DELTA_THRESHOLD:
+                        alpha_override = "BUY_YES"
+                        log_event("ALPHA", f"Front-run BUY_YES: momentum={momentum:+.2f} > {config.DELTA_THRESHOLD}")
+                    elif momentum < -config.DELTA_THRESHOLD:
+                        alpha_override = "BUY_NO"
+                        log_event("ALPHA", f"Front-run BUY_NO: momentum={momentum:+.2f} < -{config.DELTA_THRESHOLD}")
 
                 # Override 2: Anchor Defense (near expiry + holding position)
                 if secs_left < config.ANCHOR_SECONDS_THRESHOLD and my_pos:
-                    strike = self._extract_strike(market)
                     if strike and strike > 0:
                         projection_wins = self.alpha.get_settlement_projection(strike, secs_left)
                         pos_val = my_pos.get("position", 0) or 0

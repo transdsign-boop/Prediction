@@ -48,9 +48,10 @@ PROFIT_TAKE_MIN_SECS = 300        # only take full profit if >5 min remain
 HOLD_EXPIRY_SECS = 120            # don't sell in last 2 minutes — ride to settlement
 
 # Alpha Engine thresholds
-DELTA_THRESHOLD = 20              # USD — front-run trigger
+DELTA_THRESHOLD = 20              # USD — front-run trigger (momentum deviation)
 EXTREME_DELTA_THRESHOLD = 50      # USD — aggressive execution trigger
 ANCHOR_SECONDS_THRESHOLD = 60     # seconds — anchor defense trigger
+LEAD_LAG_THRESHOLD = 15           # USD — lead-lag signal trigger (global price vs strike)
 
 # Paper trading (demo mode uses live API but simulates trades)
 PAPER_STARTING_BALANCE = float(os.getenv("PAPER_STARTING_BALANCE", "100.0"))
@@ -80,6 +81,7 @@ TUNABLE_FIELDS = {
     "DELTA_THRESHOLD":          {"type": "int",   "min": 5,   "max": 200},
     "EXTREME_DELTA_THRESHOLD":  {"type": "int",   "min": 10,  "max": 500},
     "ANCHOR_SECONDS_THRESHOLD": {"type": "int",   "min": 15,  "max": 120},
+    "LEAD_LAG_THRESHOLD":       {"type": "int",   "min": 5,   "max": 200},
     "PAPER_STARTING_BALANCE":   {"type": "float", "min": 10,  "max": 100000},
 }
 

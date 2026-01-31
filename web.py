@@ -80,6 +80,8 @@ async def api_status():
         "paper_mode": config.KALSHI_ENV == "demo",
         "alpha": alpha_monitor.get_status(),
         "alpha_override": bot.status.get("alpha_override"),
+        "alpha_signal": bot.status.get("alpha_signal"),
+        "alpha_signal_diff": bot.status.get("alpha_signal_diff"),
         "orderbook": bot.status.get("orderbook"),
         "seconds_to_close": bot.status.get("seconds_to_close"),
         "strike_price": bot.status.get("strike_price"),
