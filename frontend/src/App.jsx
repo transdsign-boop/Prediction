@@ -1,12 +1,10 @@
 import { usePolling } from './hooks/usePolling'
 import { fetchStatus, fetchLogs, fetchTrades } from './api'
 import Header from './components/Header'
-import AgentHero from './components/AgentHero'
-import KeyMetrics from './components/KeyMetrics'
-import ExchangeMonitor from './components/ExchangeMonitor'
-import MarketCard from './components/MarketCard'
-import ContractTimer from './components/ContractTimer'
+import ContractCard from './components/ContractCard'
+import BotStatus from './components/BotStatus'
 import TradeLog from './components/TradeLog'
+import ExchangeMonitor from './components/ExchangeMonitor'
 import Collapsible from './components/Collapsible'
 import ChatPanel from './components/ChatPanel'
 import ConfigPanel from './components/ConfigPanel'
@@ -31,11 +29,9 @@ export default function App() {
   return (
     <div className="min-h-screen max-w-2xl mx-auto px-4 py-6 md:py-10">
       <Header status={status} onAction={refreshStatus} />
-      <AgentHero status={status} />
-      <KeyMetrics status={status} />
+      <ContractCard status={status} />
+      <BotStatus status={status} />
       <ExchangeMonitor status={status} />
-      <MarketCard status={status} />
-      <ContractTimer status={status} />
       <TradeLog tradeData={tradeData} />
 
       <div className="mt-6 space-y-2">
