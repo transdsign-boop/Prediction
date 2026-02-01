@@ -94,7 +94,7 @@ async def api_status():
         "day_pnl": day_pnl,
         "day_pnl_pct": day_pnl_pct,
         "position_pnl": position_pnl,  # Fresh calculation every request
-        "position_pnl_pct": position_pnl_pct
+        "position_pnl_pct": position_pnl_pct,
         "position": pos_label,
         "active_position": pos,
         "market": bot.status.get("current_market") or "—",
