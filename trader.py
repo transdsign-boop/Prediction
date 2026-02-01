@@ -746,49 +746,68 @@ class TradingBot:
 
     async def _wait_and_retry(self, ticker: str, order_id: str, side: str,
                                price_cents: int, qty: int, initial_order: dict | None = None):
-        """Wait 3s for a fill; cancel and retry 1c more aggressive if unfilled."""
+        """Chase fills with up to 3 retries, each 1c more aggressive at 1s intervals."""
+        max_retries = 3
+
         if self.paper_mode:
-            # Paper mode: use the initial order result to know remaining qty
             remaining = (initial_order or {}).get("remaining_count", 0)
             if remaining <= 0:
                 return  # Fully filled — nothing to retry
 
-            await asyncio.sleep(3)
+            current_price = price_cents
+            for attempt in range(1, max_retries + 1):
+                await asyncio.sleep(1)
 
-            # Refresh orderbook (market may have moved in 3s)
-            live_ob = self.alpha.get_live_orderbook(ticker) if self.alpha else None
-            self._paper_orderbook = live_ob if live_ob else await self.fetch_orderbook(ticker)
+                # Refresh orderbook (market may have moved)
+                live_ob = self.alpha.get_live_orderbook(ticker) if self.alpha else None
+                self._paper_orderbook = live_ob if live_ob else await self.fetch_orderbook(ticker)
 
-            new_price = price_cents + 1 if side == "yes" else price_cents - 1
-            new_price = max(1, min(99, new_price))
-            log_event("SIM", f"[PAPER] Retrying unfilled {remaining}x {side.upper()} @ {new_price}c (was {price_cents}c)")
-            retry_order = await self.place_order(ticker, side, new_price, remaining)
-            if retry_order:
-                self.status["last_action"] = f"Retry {side.upper()} @ {new_price}c x{remaining}"
+                current_price = current_price + 1 if side == "yes" else current_price - 1
+                current_price = max(1, min(99, current_price))
+                log_event("SIM", f"[PAPER] Retry {attempt}/{max_retries}: {remaining}x {side.upper()} @ {current_price}c (was {price_cents}c)")
+                retry_order = await self.place_order(ticker, side, current_price, remaining)
+                if retry_order:
+                    filled = retry_order.get("filled_count", 0)
+                    remaining = retry_order.get("remaining_count", remaining)
+                    self.status["last_action"] = f"Retry {attempt} {side.upper()} @ {current_price}c x{filled} filled"
+                    if remaining <= 0:
+                        return  # Fully filled
+                else:
+                    return  # Order rejected (e.g., no orderbook)
             return
 
-        await asyncio.sleep(3)
-        try:
-            order_status = await self._get(f"/portfolio/orders/{order_id}")
-            order_data = order_status.get("order", order_status)
-            status = order_data.get("status", "")
-            remaining = order_data.get("remaining_count", qty)
+        current_price = price_cents
+        current_order_id = order_id
+        for attempt in range(1, max_retries + 1):
+            await asyncio.sleep(1)
+            try:
+                order_status = await self._get(f"/portfolio/orders/{current_order_id}")
+                order_data = order_status.get("order", order_status)
+                status = order_data.get("status", "")
+                remaining = order_data.get("remaining_count", qty)
 
-            if status == "resting" and remaining > 0:
-                try:
-                    await self._delete(f"/portfolio/orders/{order_id}")
-                    log_event("ALPHA", f"Cancelled unfilled order {order_id}, retrying")
-                except Exception:
-                    pass
+                if status == "resting" and remaining > 0:
+                    try:
+                        await self._delete(f"/portfolio/orders/{current_order_id}")
+                        log_event("ALPHA", f"Cancelled unfilled order {current_order_id}, retry {attempt}/{max_retries}")
+                    except Exception:
+                        pass
 
-                new_price = price_cents + 1 if side == "yes" else price_cents - 1
-                new_price = max(1, min(99, new_price))
-                retry_order = await self.place_order(ticker, side, new_price, remaining)
-                if retry_order:
-                    self.status["last_action"] = f"Retry {side.upper()} @ {new_price}c x{remaining}"
-                    log_event("ALPHA", f"Retry order placed: {side} @ {new_price}c x{remaining}")
-        except Exception as exc:
-            log_event("ERROR", f"Fill-check error ({type(exc).__name__}): {exc!r}")
+                    current_price = current_price + 1 if side == "yes" else current_price - 1
+                    current_price = max(1, min(99, current_price))
+                    retry_order = await self.place_order(ticker, side, current_price, remaining)
+                    if retry_order:
+                        current_order_id = retry_order.get("order_id", current_order_id)
+                        qty = remaining
+                        self.status["last_action"] = f"Retry {attempt} {side.upper()} @ {current_price}c x{remaining}"
+                        log_event("ALPHA", f"Retry {attempt}/{max_retries}: {side} @ {current_price}c x{remaining}")
+                    else:
+                        return  # Order rejected
+                else:
+                    return  # Filled or cancelled
+            except Exception as exc:
+                log_event("ERROR", f"Fill-check error ({type(exc).__name__}): {exc!r}")
+                return
 
     # ------------------------------------------------------------------
     # Main loop
