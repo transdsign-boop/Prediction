@@ -33,7 +33,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
 import config
-from database import log_event
+from database import log_event, record_trade
 
 # Try to import ccxt.pro for multi-exchange WebSocket feeds
 try:
@@ -448,6 +448,27 @@ class AlphaMonitor:
                                 self.kalshi_fills.append(msg)
                                 self.kalshi_fills = self.kalshi_fills[-50:]
                                 log_event("TRADE", f"WS fill: {msg.get('side','')} {msg.get('count',0)}x @ {msg.get('yes_price', msg.get('no_price','?'))}c on {msg.get('ticker','')}")
+
+                                # Record fill to database
+                                try:
+                                    side = msg.get('side', '').lower()
+                                    count = msg.get('count', 0)
+                                    price_cents = msg.get('yes_price') if side == 'yes' else msg.get('no_price')
+                                    ticker = msg.get('ticker', '')
+                                    action = msg.get('action', '').upper()  # BUY or SELL
+
+                                    if side and count and price_cents and ticker and action:
+                                        record_trade(
+                                            market_id=ticker,
+                                            side=side,
+                                            action=action,
+                                            price=price_cents / 100.0,
+                                            quantity=count,
+                                            order_id=msg.get('order_id'),
+                                            exit_type=None  # Will be set by close_position if it's an exit
+                                        )
+                                except Exception as e:
+                                    log_event("ERROR", f"Failed to record WS fill: {e}")
 
                         except (json.JSONDecodeError, ValueError, KeyError):
                             pass
