@@ -54,6 +54,9 @@ async def api_status():
     decision = bot.status.get("last_decision") or get_latest_decision()
     pos = bot.status.get("active_position")
     pos_label = "None"
+
+    # Calculate fresh position P&L on every request for live updates
+    position_pnl = 0.0
     if pos:
         pos_val = pos.get("position", 0) or 0
         exposure = pos.get("market_exposure", 0) or 0
@@ -62,11 +65,25 @@ async def api_status():
         elif pos_val < 0:
             pos_label = f"{abs(pos_val)}x NO (${exposure/100:.2f})"
 
+        # Calculate real-time P&L using current orderbook
+        ob = bot.status.get("orderbook") or {}
+        best_bid = ob.get("best_bid", 0)
+        best_ask = ob.get("best_ask", 100)
+
+        if pos_val != 0 and best_bid > 0:
+            if pos_val > 0:
+                # Long YES: current value = best_bid × qty
+                mark_to_market = best_bid * pos_val
+            else:
+                # Long NO: current value = (100 - best_ask) × |qty|
+                mark_to_market = (100 - best_ask) * abs(pos_val)
+            position_pnl = (mark_to_market - exposure) / 100.0
+
     return {
         "running": bot.status["running"],
         "balance": f"${bot.status['balance']:.2f}",
         "day_pnl": bot.status.get("day_pnl", 0.0),
-        "position_pnl": bot.status.get("position_pnl", 0.0),
+        "position_pnl": position_pnl,  # Fresh calculation every request
         "position": pos_label,
         "active_position": pos,
         "market": bot.status.get("current_market") or "—",
