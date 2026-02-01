@@ -1,7 +1,8 @@
 export default function BotStatus({ status }) {
   const {
     running, last_action, decision, confidence, reasoning, alpha_override,
-    balance, day_pnl, position_pnl, position, active_position, orderbook
+    balance, day_pnl, position_pnl, active_position, orderbook,
+    total_account_value, start_balance
   } = status
   const conf = Math.round((confidence || 0) * 100)
   const action = last_action || 'Idle'
@@ -23,13 +24,14 @@ export default function BotStatus({ status }) {
   if (decision === 'BUY_YES') badgeBg = 'bg-green-500/15 text-green-400'
   else if (decision === 'BUY_NO') badgeBg = 'bg-red-500/15 text-red-400'
 
-  // Position value computation
+  // Use backend-computed totals (accurate across all positions)
   const bal = typeof balance === 'number' ? balance : parseFloat(balance) || 0
-  let posMarketValue = 0
-  let posQty = 0
-  let posSide = ''
-  let costPerContract = 0
-  let valuePerContract = 0
+  const totalAccount = typeof total_account_value === 'number' ? total_account_value : bal
+  const startBal = typeof start_balance === 'number' ? start_balance : totalAccount - pnl
+  const pnlPct = startBal > 0 ? (pnl / startBal) * 100 : 0
+
+  // Position detail for display
+  let posQty = 0, posSide = '', costPerContract = 0, valuePerContract = 0, posMarketValue = 0
   if (active_position) {
     const rawQty = active_position.position || 0
     const exposureCents = active_position.market_exposure || 0
@@ -37,11 +39,8 @@ export default function BotStatus({ status }) {
     posSide = rawQty > 0 ? 'YES' : 'NO'
     costPerContract = posQty > 0 ? exposureCents / posQty : 0
     valuePerContract = rawQty > 0 ? (ob.best_bid || 0) : (100 - (ob.best_ask || 100))
-    posMarketValue = valuePerContract * posQty / 100 // dollars
+    posMarketValue = valuePerContract * posQty / 100
   }
-  const totalAccount = bal + posMarketValue
-  const startBal = totalAccount - pnl
-  const pnlPct = startBal > 0 ? (pnl / startBal) * 100 : 0
 
   return (
     <div className="card p-4 mb-4">

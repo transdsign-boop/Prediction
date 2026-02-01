@@ -1008,10 +1008,20 @@ class TradingBot:
 
             # All-time P&L: paper uses fixed starting balance, live uses session start
             if self.paper_mode:
-                all_time_pnl = (balance + total_exposure) - config.PAPER_STARTING_BALANCE
+                start_bal = config.PAPER_STARTING_BALANCE
+                all_time_pnl = (balance + total_exposure) - start_bal
             else:
+                start_bal = self._start_balance + self._start_exposure
                 all_time_pnl = settled_pnl
             self.status["day_pnl"] = all_time_pnl + self.status["position_pnl"]
+
+            # Total account value: cash + mark-to-market of all positions
+            # mark_to_market is only for active position; other positions use cost basis
+            active_mtm = mark_to_market / 100.0 if my_pos else 0.0
+            active_cost = (my_pos.get("market_exposure", 0) or 0) / 100.0 if my_pos else 0.0
+            other_exposure = total_exposure - active_cost  # cost basis of non-active positions
+            self.status["total_account_value"] = balance + active_mtm + other_exposure
+            self.status["start_balance"] = start_bal
 
             # 5. Exit logic (stop-loss + profit-taking) — before time guard
             #    so hold-to-expiry can still fire, but after P&L is computed
