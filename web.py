@@ -54,10 +54,32 @@ async def api_status():
     decision = bot.status.get("last_decision") or get_latest_decision()
     pos = bot.status.get("active_position")
     pos_label = "None"
+    ticker = bot.status.get("current_market") or ""
 
-    # Calculate fresh position P&L on every request for live updates
+    # Use live WebSocket orderbook when available (updates in real-time),
+    # fall back to the cycle-cached snapshot (updates every 10s)
+    live_ob = alpha_monitor.get_live_orderbook(ticker) if ticker else None
+    if live_ob:
+        yes_orders = live_ob.get("yes", []) if isinstance(live_ob.get("yes"), list) else []
+        no_orders = live_ob.get("no", []) if isinstance(live_ob.get("no"), list) else []
+        best_bid = max((p for p, q in yes_orders), default=0) if yes_orders else 0
+        best_ask = (100 - max((p for p, q in no_orders), default=0)) if no_orders else 100
+        ob_snapshot = {
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "spread": best_ask - best_bid,
+            "yes_depth": sum(q for _, q in yes_orders),
+            "no_depth": sum(q for _, q in no_orders),
+        }
+    else:
+        ob_snapshot = bot.status.get("orderbook") or {}
+        best_bid = ob_snapshot.get("best_bid", 0)
+        best_ask = ob_snapshot.get("best_ask", 100)
+
+    # Calculate fresh position P&L on every request using live orderbook
     position_pnl = 0.0
     position_pnl_pct = 0.0
+    mark_to_market = 0
     if pos:
         pos_val = pos.get("position", 0) or 0
         exposure = pos.get("market_exposure", 0) or 0
@@ -66,38 +88,43 @@ async def api_status():
         elif pos_val < 0:
             pos_label = f"{abs(pos_val)}x NO (${exposure/100:.2f})"
 
-        # Calculate real-time P&L using current orderbook
-        ob = bot.status.get("orderbook") or {}
-        best_bid = ob.get("best_bid", 0)
-        best_ask = ob.get("best_ask", 100)
-
         if pos_val != 0 and best_bid > 0:
             if pos_val > 0:
-                # Long YES: current value = best_bid × qty
                 mark_to_market = best_bid * pos_val
             else:
-                # Long NO: current value = (100 - best_ask) × |qty|
                 mark_to_market = (100 - best_ask) * abs(pos_val)
             position_pnl = (mark_to_market - exposure) / 100.0
-            # Calculate percentage gain
             if exposure > 0:
                 position_pnl_pct = (position_pnl / (exposure / 100.0)) * 100.0
 
-    # Calculate day P&L percentage
+    # Total account value: use backend-computed value, but update position MTM with live data
+    balance_num = bot.status.get("balance", 0.0)
+    total_account = bot.status.get("total_account_value", balance_num)
+    # If we have fresher MTM from live orderbook, adjust total_account
+    if live_ob and pos:
+        cycle_mtm = bot.status.get("position_pnl", 0.0)  # from last cycle
+        total_account = total_account - cycle_mtm + position_pnl
+
+    start_bal = bot.status.get("start_balance")
+    if start_bal is None:
+        start_bal = config.PAPER_STARTING_BALANCE if bot.paper_mode else (bot._start_balance or 100.0)
+
     day_pnl = bot.status.get("day_pnl", 0.0)
-    starting_balance = config.PAPER_STARTING_BALANCE if bot.paper_mode else (bot._start_balance or 100.0)
-    day_pnl_pct = (day_pnl / starting_balance * 100.0) if starting_balance > 0 else 0.0
+    # Refresh day_pnl with live position P&L
+    cycle_pos_pnl = bot.status.get("position_pnl", 0.0)
+    live_day_pnl = day_pnl - cycle_pos_pnl + position_pnl
 
     return {
         "running": bot.status["running"],
-        "balance": f"${bot.status['balance']:.2f}",
-        "day_pnl": day_pnl,
-        "day_pnl_pct": day_pnl_pct,
-        "position_pnl": position_pnl,  # Fresh calculation every request
+        "balance": balance_num,
+        "day_pnl": live_day_pnl,
+        "position_pnl": position_pnl,
         "position_pnl_pct": position_pnl_pct,
+        "total_account_value": total_account,
+        "start_balance": start_bal,
         "position": pos_label,
         "active_position": pos,
-        "market": bot.status.get("current_market") or "—",
+        "market": ticker or "—",
         "last_action": bot.status.get("last_action", "Idle"),
         "cycle_count": bot.status["cycle_count"],
         "decision": decision.get("decision", "—") if decision else "—",
@@ -110,7 +137,7 @@ async def api_status():
         "alpha_override": bot.status.get("alpha_override"),
         "alpha_signal": bot.status.get("alpha_signal"),
         "alpha_signal_diff": bot.status.get("alpha_signal_diff"),
-        "orderbook": bot.status.get("orderbook"),
+        "orderbook": ob_snapshot,
         "seconds_to_close": bot.status.get("seconds_to_close"),
         "strike_price": bot.status.get("strike_price"),
         "close_time": bot.status.get("close_time"),

@@ -25,7 +25,7 @@ export default function BotStatus({ status }) {
   else if (decision === 'BUY_NO') badgeBg = 'bg-red-500/15 text-red-400'
 
   // Use backend-computed totals (accurate across all positions)
-  const bal = typeof balance === 'number' ? balance : parseFloat(balance) || 0
+  const bal = typeof balance === 'number' ? balance : parseFloat(String(balance).replace(/[$,]/g, '')) || 0
   const totalAccount = typeof total_account_value === 'number' ? total_account_value : bal
   const startBal = typeof start_balance === 'number' ? start_balance : totalAccount - pnl
   const pnlPct = startBal > 0 ? (pnl / startBal) * 100 : 0
