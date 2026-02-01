@@ -16,6 +16,11 @@ const SETTINGS = {
     unit: '$',
     desc: 'Starting balance for paper trading. Use the Reset button in the header to apply a new value.',
   },
+  PAPER_FILL_FRACTION: {
+    label: 'Paper Fill Realism',
+    unit: '',
+    desc: 'Fraction of orderbook depth available per fill. 0.1 = pessimistic (thin book competition), 0.5 = realistic, 1.0 = optimistic (get all visible depth).',
+  },
   ORDER_SIZE_PCT: {
     label: 'Order Size',
     unit: '%',
@@ -42,9 +47,9 @@ const SETTINGS = {
     desc: 'Skip trading if the bid-ask spread is wider than this. Avoids poor fills in illiquid markets.',
   },
   MIN_AGENT_CONFIDENCE: {
-    label: 'Min AI Confidence',
+    label: 'Min AI Confidence (legacy)',
     unit: '',
-    desc: 'Minimum confidence (0-1) from the AI agent to execute a trade. Higher = more selective.',
+    desc: 'Legacy setting. Rule-based Min Confidence below is the active version.',
   },
   MIN_CONTRACT_PRICE: {
     label: 'Min Entry Price',
@@ -115,12 +120,46 @@ const SETTINGS = {
     unit: '$',
     desc: 'How much the weighted global BTC price must differ from strike to trigger. Higher = less sensitive, fewer trades.',
   },
+  MIN_EDGE_CENTS: {
+    label: 'Min Edge',
+    unit: 'c',
+    desc: 'Minimum mispricing (fair value minus market price) in cents before the bot will trade. Lower = more trades, higher = pickier.',
+  },
+  RULE_MIN_CONFIDENCE: {
+    label: 'Min Confidence',
+    unit: '',
+    desc: 'Minimum confidence score (0-1) from the rule engine to execute. Combines edge size, trend, and time remaining.',
+  },
+  FAIR_VALUE_K: {
+    label: 'Fair Value Steepness',
+    unit: '',
+    desc: 'How aggressively fair value reacts to BTC distance from strike. Higher = more decisive when BTC is clearly above/below.',
+  },
+  VOL_HIGH_THRESHOLD: {
+    label: 'High Vol Threshold',
+    unit: '$/min',
+    desc: 'BTC price movement above this = high volatility mode. Relaxes edge requirement and adds trend-following bonus. E.g., $15/min means BTC is swinging ~$15 every minute.',
+  },
+  VOL_LOW_THRESHOLD: {
+    label: 'Low Vol Threshold',
+    unit: '$/min',
+    desc: 'BTC price movement below this = low volatility. Bot sits out (if enabled) because flat markets offer no edge. E.g., $3/min means BTC is barely moving.',
+  },
+  RULE_SIT_OUT_LOW_VOL: {
+    label: 'Sit Out Low Vol',
+    desc: 'Skip trading entirely when volatility is below the low threshold. Disable to trade in flat markets too.',
+  },
+  TREND_FOLLOW_VELOCITY: {
+    label: 'Trend Velocity',
+    unit: '$/s',
+    desc: 'Minimum BTC price movement speed for trend-following bonus in high-vol mode. Lower = easier to trigger.',
+  },
 }
 
 const GROUPS = [
   {
     title: 'General',
-    keys: ['TRADING_ENABLED', 'POLL_INTERVAL_SECONDS', 'PAPER_STARTING_BALANCE'],
+    keys: ['TRADING_ENABLED', 'POLL_INTERVAL_SECONDS', 'PAPER_STARTING_BALANCE', 'PAPER_FILL_FRACTION'],
   },
   {
     title: 'Position Sizing',
@@ -141,6 +180,10 @@ const GROUPS = [
   {
     title: 'Alpha Engine',
     keys: ['LEAD_LAG_ENABLED', 'LEAD_LAG_THRESHOLD', 'DELTA_THRESHOLD', 'EXTREME_DELTA_THRESHOLD', 'ANCHOR_SECONDS_THRESHOLD'],
+  },
+  {
+    title: 'Rule-Based Strategy',
+    keys: ['MIN_EDGE_CENTS', 'RULE_MIN_CONFIDENCE', 'FAIR_VALUE_K', 'VOL_HIGH_THRESHOLD', 'VOL_LOW_THRESHOLD', 'RULE_SIT_OUT_LOW_VOL', 'TREND_FOLLOW_VELOCITY'],
   },
 ]
 
@@ -237,7 +280,7 @@ export default function ConfigPanel() {
                           value={spec.value}
                           min={spec.min}
                           max={spec.max}
-                          step={spec.type === 'float' ? '0.01' : '1'}
+                          step={spec.type === 'float' ? (spec.min < 0.001 ? '0.00001' : '0.01') : '1'}
                           onChange={e => {
                             const val = spec.type === 'float' ? parseFloat(e.target.value) : parseInt(e.target.value, 10)
                             updateLocalValue(key, val)

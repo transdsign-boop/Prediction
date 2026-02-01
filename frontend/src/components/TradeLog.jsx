@@ -25,7 +25,7 @@ export default function TradeLog({ tradeData }) {
       groups.push(group)
     }
     groupMap[mid].entries.push(t)
-    if (t.action === 'SETTLED' || t.action === 'SELL') {
+    if (['SELL', 'SETTLED', 'SETTLE', 'SL', 'TP'].includes(t.action)) {
       groupMap[mid].settled = t
     }
   }
@@ -100,7 +100,7 @@ function TradeGroup({ group }) {
           <span className="text-amber-400 font-semibold shrink-0">OPEN</span>
         ) : pnl != null ? (
           <span className={`shrink-0 font-semibold ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
+            {pnl >= 0 ? 'W' : 'L'} {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
           </span>
         ) : (
           <span className="text-gray-600 shrink-0">--</span>

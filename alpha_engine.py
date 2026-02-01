@@ -24,6 +24,7 @@ Key signals:
 import asyncio
 import base64
 import json
+import math
 import random
 import time
 from datetime import datetime, timezone
@@ -134,6 +135,14 @@ class AlphaMonitor:
         self._minute_prices: list[tuple[float, float]] = []
         self._current_minute: int = -1
         self.projected_settlement: float = 0.0
+
+        # Rolling price history (15-min window for trend/volatility analysis)
+        self._price_history: list[tuple[float, float]] = []  # (timestamp, weighted_global_price)
+        self.PRICE_HISTORY_WINDOW = 900  # 15 minutes in seconds
+
+        # Full-contract settlement tracking (persists across minute boundaries)
+        self._contract_settlement_prices: list[tuple[float, float]] = []
+        self._contract_start_ts: float = 0.0
 
         # Kalshi real-time data
         self.kalshi_connected: bool = False
@@ -521,6 +530,9 @@ class AlphaMonitor:
         lead_price, settle_price, spread = self.get_lead_vs_settlement()
         self.lead_lag_spread = spread
 
+        # Record for rolling price history (trend/volatility analysis)
+        self._record_price_history(self._weighted_price)
+
     def get_weighted_global_price(self) -> float:
         """Weighted consensus price across all connected exchanges."""
         valid = {k: v for k, v in self.prices.items() if v > 0}
@@ -630,6 +642,7 @@ class AlphaMonitor:
             self._current_minute = current_minute
 
         self._minute_prices.append((time.time(), price))
+        self._record_contract_settlement(price)
 
         if self._minute_prices:
             self.projected_settlement = sum(p for _, p in self._minute_prices) / len(self._minute_prices)
@@ -673,6 +686,182 @@ class AlphaMonitor:
         return projected_avg >= strike_price
 
     # ------------------------------------------------------------------
+    # Rolling price history and derived metrics (for rule-based strategy)
+    # ------------------------------------------------------------------
+
+    def _record_price_history(self, weighted_price: float):
+        """Record weighted global price for trend/volatility calculations."""
+        if weighted_price <= 0:
+            return
+        now = time.time()
+        self._price_history.append((now, weighted_price))
+        cutoff = now - self.PRICE_HISTORY_WINDOW
+        self._price_history = [(ts, p) for ts, p in self._price_history if ts >= cutoff]
+
+    def _record_contract_settlement(self, price: float):
+        """Record settlement-exchange price for full-contract BRTI projection."""
+        now = time.time()
+        self._contract_settlement_prices.append((now, price))
+        cutoff = now - self.PRICE_HISTORY_WINDOW
+        self._contract_settlement_prices = [
+            (ts, p) for ts, p in self._contract_settlement_prices if ts >= cutoff
+        ]
+
+    def reset_contract_window(self):
+        """Reset full-contract settlement tracking for a new contract."""
+        self._contract_settlement_prices = []
+        self._contract_start_ts = time.time()
+
+    def get_price_velocity(self) -> dict:
+        """Compute price rate-of-change over 1-min and 5-min windows.
+
+        Returns dict with velocity ($/sec), direction (+1/-1/0), and absolute change.
+        """
+        now = time.time()
+        result = {
+            "velocity_1m": 0.0, "velocity_5m": 0.0,
+            "direction_1m": 0, "direction_5m": 0,
+            "price_change_1m": 0.0, "price_change_5m": 0.0,
+        }
+        if len(self._price_history) < 2:
+            return result
+
+        current_price = self._price_history[-1][1]
+
+        for window_key, window_secs in [("1m", 60), ("5m", 300)]:
+            cutoff = now - window_secs
+            older = [p for ts, p in self._price_history if ts <= cutoff + 5]
+            if older:
+                old_price = older[-1]
+                change = current_price - old_price
+                result[f"velocity_{window_key}"] = change / window_secs
+                result[f"direction_{window_key}"] = 1 if change > 0 else (-1 if change < 0 else 0)
+                result[f"price_change_{window_key}"] = change
+
+        return result
+
+    def get_volatility(self) -> dict:
+        """Compute realized volatility from price history.
+
+        Returns:
+          - volatility_5m: return stdev (used internally by fair value calc)
+          - vol_dollar_per_min: average absolute BTC movement in $/min (intuitive metric)
+          - regime: "high", "medium", or "low" based on $/min thresholds
+        """
+        now = time.time()
+        result = {"volatility_1m": 0.0, "volatility_5m": 0.0,
+                  "vol_dollar_per_min": 0.0, "regime": "low"}
+
+        for suffix, window_secs in [("1m", 60), ("5m", 300)]:
+            cutoff = now - window_secs
+            window = [(ts, p) for ts, p in self._price_history if ts >= cutoff]
+            if len(window) < 10:
+                continue
+
+            returns = []
+            for i in range(1, len(window)):
+                if window[i][0] - window[i - 1][0] < 0.1:
+                    continue
+                ret = (window[i][1] - window[i - 1][1]) / window[i - 1][1]
+                returns.append(ret)
+
+            if len(returns) >= 5:
+                mean = sum(returns) / len(returns)
+                variance = sum((r - mean) ** 2 for r in returns) / len(returns)
+                result[f"volatility_{suffix}"] = math.sqrt(variance)
+
+        # Compute $/min: total absolute price path length / duration in minutes
+        # This is intuitive: "BTC is moving about $X per minute on average"
+        cutoff_5m = now - 300
+        window_5m = [(ts, p) for ts, p in self._price_history if ts >= cutoff_5m]
+        if len(window_5m) >= 10:
+            first_ts = window_5m[0][0]
+            last_ts = window_5m[-1][0]
+            duration_min = (last_ts - first_ts) / 60.0
+            if duration_min > 0.5:
+                total_movement = sum(
+                    abs(window_5m[i][1] - window_5m[i - 1][1])
+                    for i in range(1, len(window_5m))
+                )
+                result["vol_dollar_per_min"] = total_movement / duration_min
+
+        # Regime classification using $/min (config thresholds are in $/min)
+        vol_dpm = result["vol_dollar_per_min"]
+        if vol_dpm > config.VOL_HIGH_THRESHOLD:
+            result["regime"] = "high"
+        elif vol_dpm > config.VOL_LOW_THRESHOLD:
+            result["regime"] = "medium"
+        else:
+            result["regime"] = "low"
+
+        return result
+
+    def get_fair_value(self, strike_price: float, seconds_remaining: float) -> dict:
+        """Estimate fair YES probability using projected settlement vs strike.
+
+        Uses full-contract settlement prices + current weighted price, converted
+        to probability via a logistic function scaled by realized volatility.
+        """
+        gwp = self.get_weighted_global_price()
+        if gwp <= 0 or strike_price <= 0:
+            return {"fair_yes_prob": 0.5, "fair_yes_cents": 50,
+                    "btc_vs_strike": 0.0, "projected_settlement": 0.0}
+
+        btc_vs_strike = gwp - strike_price
+
+        # Full-contract settlement projection
+        if self._contract_settlement_prices:
+            avg_settlement = (
+                sum(p for _, p in self._contract_settlement_prices)
+                / len(self._contract_settlement_prices)
+            )
+        else:
+            settle_valid = {
+                k: self.prices[k] for k in SETTLEMENT_EXCHANGES
+                if self.prices.get(k, 0) > 0
+            }
+            avg_settlement = (
+                sum(settle_valid.values()) / len(settle_valid) if settle_valid else gwp
+            )
+
+        # Blend historical settlement avg with current price
+        # Weight current price more as we approach expiry
+        if seconds_remaining > 0 and self._contract_start_ts > 0:
+            elapsed = max(time.time() - self._contract_start_ts, 1.0)
+            total = elapsed + seconds_remaining
+            current_weight = min(0.85, seconds_remaining / total + 0.3)
+            projected = avg_settlement * (1 - current_weight) + gwp * current_weight
+        else:
+            projected = avg_settlement
+
+        settlement_vs_strike = projected - strike_price
+
+        # Convert $ distance to probability using logistic function
+        vol_data = self.get_volatility()
+        vol = vol_data["volatility_5m"] if vol_data["volatility_5m"] > 0 else 0.0001
+
+        # Dollar volatility over remaining contract time
+        dollar_vol = gwp * vol * math.sqrt(max(seconds_remaining, 1) / 5)
+        dollar_vol = max(dollar_vol, 1.0)
+
+        z_score = settlement_vs_strike / dollar_vol
+
+        k = config.FAIR_VALUE_K
+        try:
+            fair_prob = 1.0 / (1.0 + math.exp(-k * z_score))
+        except OverflowError:
+            fair_prob = 1.0 if z_score > 0 else 0.0
+
+        fair_prob = max(0.01, min(0.99, fair_prob))
+
+        return {
+            "fair_yes_prob": fair_prob,
+            "fair_yes_cents": round(fair_prob * 100),
+            "btc_vs_strike": btc_vs_strike,
+            "projected_settlement": projected,
+        }
+
+    # ------------------------------------------------------------------
     # Status snapshot (for dashboard)
     # ------------------------------------------------------------------
 
@@ -708,4 +897,8 @@ class AlphaMonitor:
                 for ex in EXCHANGE_CONFIG
             },
             "has_ccxt": HAS_CCXT,
+            # Rule-based strategy metrics
+            "price_velocity": self.get_price_velocity(),
+            "volatility": self.get_volatility(),
+            "price_history_len": len(self._price_history),
         }

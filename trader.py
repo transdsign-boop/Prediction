@@ -82,6 +82,7 @@ class TradingBot:
         self._paper_positions: dict[str, dict] = {}  # ticker -> {side, quantity, avg_price_cents, market_exposure_cents}
         self._paper_trades: list[dict] = []
         self._last_paper_ticker: str | None = None
+        self._paper_orderbook: dict | None = None  # latest orderbook snapshot for realistic paper fills
 
         # Live state exposed to the dashboard
         self.status: dict[str, Any] = {
@@ -342,30 +343,101 @@ class TradingBot:
             log_event("ERROR", f"Order rejected: {exc.response.text[:200]}")
             return None
 
+    def _simulate_fill(
+        self, orderbook: dict, action: str, side: str,
+        limit_price_cents: int, quantity: int,
+    ) -> tuple[int, int, list[tuple[int, int]]]:
+        """Walk the orderbook to simulate a realistic fill — crossing fills only.
+
+        Exactly mirrors how Kalshi's matching engine works: only fills against
+        resting orders whose price crosses your limit.
+
+        Returns (filled_qty, avg_price_cents, [(price, qty), ...]).
+        """
+        fill_fraction = config.PAPER_FILL_FRACTION
+
+        # Determine which book side to consume and price interpretation
+        if action == "buy":
+            if side == "yes":
+                raw_levels = orderbook.get("no", [])
+                # NO bid at P → YES available at (100-P); fillable when (100-P) <= limit
+                levels = [
+                    (100 - p, q) for p, q in raw_levels
+                    if p >= (100 - limit_price_cents)
+                ]
+            else:
+                raw_levels = orderbook.get("yes", [])
+                levels = [
+                    (100 - p, q) for p, q in raw_levels
+                    if p >= (100 - limit_price_cents)
+                ]
+        else:  # sell
+            if side == "yes":
+                raw_levels = orderbook.get("yes", [])
+                levels = [(p, q) for p, q in raw_levels if p >= limit_price_cents]
+            else:
+                raw_levels = orderbook.get("no", [])
+                levels = [(p, q) for p, q in raw_levels if p >= limit_price_cents]
+
+        # Sort: buys cheapest-first, sells best-price-first
+        if action == "buy":
+            levels.sort(key=lambda x: x[0])
+        else:
+            levels.sort(key=lambda x: x[0], reverse=True)
+
+        filled = 0
+        fills = []
+        for price_at_level, qty_at_level in levels:
+            if filled >= quantity:
+                break
+            available = max(1, int(qty_at_level * fill_fraction))
+            take = min(available, quantity - filled)
+            fills.append((price_at_level, take))
+            filled += take
+
+        if filled == 0:
+            return 0, 0, []
+
+        avg_price = sum(p * q for p, q in fills) / filled
+        return filled, int(round(avg_price)), fills
+
     def _paper_place_order(self, ticker: str, side: str, price_cents: int, quantity: int) -> dict:
-        """Simulate a buy order in paper mode."""
-        cost_cents = price_cents * quantity
+        """Simulate a buy order against the live orderbook depth."""
+        ob = self._paper_orderbook
+        if not ob:
+            log_event("SIM", f"[PAPER] No orderbook available — skipping buy")
+            return None
+
+        filled_qty, avg_price, fills = self._simulate_fill(ob, "buy", side, price_cents, quantity)
+        if filled_qty == 0:
+            log_event("SIM", f"[PAPER] No liquidity for {side.upper()} @ {price_cents}c on {ticker}")
+            return None
+
+        cost_cents = avg_price * filled_qty
         cost_dollars = cost_cents / 100.0
 
         if cost_dollars > self._paper_balance:
-            log_event("SIM", f"[PAPER] Insufficient balance: need ${cost_dollars:.2f}, have ${self._paper_balance:.2f}")
-            return None
+            affordable = int(self._paper_balance * 100 / avg_price) if avg_price > 0 else 0
+            if affordable <= 0:
+                log_event("SIM", f"[PAPER] Insufficient balance: need ${cost_dollars:.2f}, have ${self._paper_balance:.2f}")
+                return None
+            filled_qty = affordable
+            cost_cents = avg_price * filled_qty
+            cost_dollars = cost_cents / 100.0
 
         self._paper_balance -= cost_dollars
 
-        # Accumulate position
+        # Accumulate position using actual fill price (includes slippage)
         if ticker in self._paper_positions:
             pos = self._paper_positions[ticker]
             if pos["side"] == side:
-                # Same side — average in
                 old_total = pos["avg_price_cents"] * pos["quantity"]
-                new_total = price_cents * quantity
-                pos["quantity"] += quantity
+                new_total = avg_price * filled_qty
+                pos["quantity"] += filled_qty
                 pos["avg_price_cents"] = (old_total + new_total) / pos["quantity"]
                 pos["market_exposure_cents"] += cost_cents
             else:
-                # Opposite side — reduce position
-                reduce = min(quantity, pos["quantity"])
+                reduce = min(filled_qty, pos["quantity"])
                 pos["quantity"] -= reduce
                 pos["market_exposure_cents"] -= pos["avg_price_cents"] * reduce
                 if pos["quantity"] <= 0:
@@ -373,24 +445,29 @@ class TradingBot:
         else:
             self._paper_positions[ticker] = {
                 "side": side,
-                "quantity": quantity,
-                "avg_price_cents": price_cents,
+                "quantity": filled_qty,
+                "avg_price_cents": avg_price,
                 "market_exposure_cents": cost_cents,
             }
 
         order_id = f"paper-{int(time.time() * 1000)}"
+        remaining = quantity - filled_qty
+        slippage = avg_price - price_cents if side == "yes" else price_cents - avg_price
+        slip_str = f", slip {slippage:+d}c" if slippage != 0 else ""
+        partial_str = f" (partial {filled_qty}/{quantity})" if remaining > 0 else ""
+
         record_trade(
             market_id=f"[PAPER] {ticker}",
             side=side,
             action="BUY",
-            price=price_cents / 100.0,
-            quantity=quantity,
+            price=avg_price / 100.0,
+            quantity=filled_qty,
             order_id=order_id,
         )
-        log_event("SIM", f"[PAPER] BUY {quantity}x {side.upper()} @ {price_cents}c on {ticker} (cost ${cost_dollars:.2f}, bal ${self._paper_balance:.2f})")
+        log_event("SIM", f"[PAPER] BUY {filled_qty}x {side.upper()} @ {avg_price}c on {ticker}{partial_str}{slip_str} (cost ${cost_dollars:.2f}, bal ${self._paper_balance:.2f})")
         self._save_paper_state()
 
-        return {"order_id": order_id, "status": "filled", "filled_count": quantity, "remaining_count": 0}
+        return {"order_id": order_id, "status": "filled" if remaining == 0 else "partial", "filled_count": filled_qty, "remaining_count": remaining}
 
     async def close_position(
         self, ticker: str, side: str, price_cents: int, quantity: int, exit_type: str = "SELL"
@@ -437,37 +514,54 @@ class TradingBot:
             return None
 
     def _paper_close_position(self, ticker: str, side: str, price_cents: int, quantity: int, exit_type: str = "SELL") -> dict | None:
-        """Simulate selling a position in paper mode."""
+        """Simulate selling a position against the live orderbook depth."""
         pos = self._paper_positions.get(ticker)
         if not pos or pos["quantity"] <= 0:
             log_event("SIM", f"[PAPER] No position to close for {ticker}")
             return None
 
-        sell_qty = min(quantity, pos["quantity"])
-        proceeds_cents = price_cents * sell_qty
+        want_qty = min(quantity, pos["quantity"])
+        ob = self._paper_orderbook
+
+        if ob:
+            filled_qty, avg_price, fills = self._simulate_fill(ob, "sell", side, price_cents, want_qty)
+            if filled_qty == 0:
+                log_event("SIM", f"[PAPER] No liquidity for {exit_type} {side.upper()} @ {price_cents}c on {ticker}")
+                return None
+        else:
+            # No orderbook available — fall back to limit price (graceful degradation)
+            filled_qty = want_qty
+            avg_price = price_cents
+
+        proceeds_cents = avg_price * filled_qty
         proceeds_dollars = proceeds_cents / 100.0
 
         self._paper_balance += proceeds_dollars
 
-        pos["quantity"] -= sell_qty
-        pos["market_exposure_cents"] -= pos["avg_price_cents"] * sell_qty
+        pos["quantity"] -= filled_qty
+        pos["market_exposure_cents"] -= pos["avg_price_cents"] * filled_qty
         if pos["quantity"] <= 0:
             del self._paper_positions[ticker]
 
         order_id = f"paper-sell-{int(time.time() * 1000)}"
+        remaining = want_qty - filled_qty
+        slippage = price_cents - avg_price if side == "yes" else avg_price - price_cents
+        slip_str = f", slip {slippage:+d}c" if slippage != 0 else ""
+        partial_str = f" (partial {filled_qty}/{want_qty})" if remaining > 0 else ""
+
         record_trade(
             market_id=f"[PAPER] {ticker}",
             side=side,
             action="SELL",
-            price=price_cents / 100.0,
-            quantity=sell_qty,
+            price=avg_price / 100.0,
+            quantity=filled_qty,
             order_id=order_id,
             exit_type=exit_type,
         )
-        log_event("SIM", f"[PAPER] {exit_type} {sell_qty}x {side.upper()} @ {price_cents}c on {ticker} (proceeds ${proceeds_dollars:.2f}, bal ${self._paper_balance:.2f})")
+        log_event("SIM", f"[PAPER] {exit_type} {filled_qty}x {side.upper()} @ {avg_price}c on {ticker}{partial_str}{slip_str} (proceeds ${proceeds_dollars:.2f}, bal ${self._paper_balance:.2f})")
         self._save_paper_state()
 
-        return {"order_id": order_id, "status": "filled", "filled_count": sell_qty, "remaining_count": 0}
+        return {"order_id": order_id, "status": "filled" if remaining == 0 else "partial", "filled_count": filled_qty, "remaining_count": remaining}
 
     async def _settle_paper_positions(self, new_ticker: str):
         """Settle expired paper positions by checking the actual market result.
@@ -610,10 +704,28 @@ class TradingBot:
         return None
 
     async def _wait_and_retry(self, ticker: str, order_id: str, side: str,
-                               price_cents: int, qty: int):
+                               price_cents: int, qty: int, initial_order: dict | None = None):
         """Wait 3s for a fill; cancel and retry 1c more aggressive if unfilled."""
         if self.paper_mode:
-            return  # Paper orders fill instantly
+            # Paper mode: use the initial order result to know remaining qty
+            remaining = (initial_order or {}).get("remaining_count", 0)
+            if remaining <= 0:
+                return  # Fully filled — nothing to retry
+
+            await asyncio.sleep(3)
+
+            # Refresh orderbook (market may have moved in 3s)
+            live_ob = self.alpha.get_live_orderbook(ticker) if self.alpha else None
+            self._paper_orderbook = live_ob if live_ob else await self.fetch_orderbook(ticker)
+
+            new_price = price_cents + 1 if side == "yes" else price_cents - 1
+            new_price = max(1, min(99, new_price))
+            log_event("SIM", f"[PAPER] Retrying unfilled {remaining}x {side.upper()} @ {new_price}c (was {price_cents}c)")
+            retry_order = await self.place_order(ticker, side, new_price, remaining)
+            if retry_order:
+                self.status["last_action"] = f"Retry {side.upper()} @ {new_price}c x{remaining}"
+            return
+
         await asyncio.sleep(3)
         try:
             order_status = await self._get(f"/portfolio/orders/{order_id}")
@@ -694,16 +806,22 @@ class TradingBot:
                 # Clear tracking sets for new contract
                 self._free_rolled.clear()
                 self._took_profit.clear()
+                if self.alpha:
+                    self.alpha.reset_contract_window()
             if self.paper_mode:
                 if self._last_paper_ticker != ticker:
                     self._last_paper_ticker = ticker
                     self._save_paper_state()
+                    if self.alpha:
+                        self.alpha.reset_contract_window()
             else:
                 # In live mode, also clear tracking sets on ticker change
                 if self._last_paper_ticker != ticker:
                     self._last_paper_ticker = ticker
                     self._free_rolled.clear()
                     self._took_profit.clear()
+                    if self.alpha:
+                        self.alpha.reset_contract_window()
 
             # Subscribe to live orderbook if Kalshi WS is connected
             if self.alpha and self.alpha.kalshi_connected:
@@ -743,6 +861,8 @@ class TradingBot:
             # 4. Orderbook (always fetch — needed for dashboard + P&L even during guards)
             live_ob = self.alpha.get_live_orderbook(ticker) if self.alpha else None
             ob = live_ob if live_ob else await self.fetch_orderbook(ticker)
+            if self.paper_mode:
+                self._paper_orderbook = ob
             spread_ok, best_bid, best_ask = self._spread_guard(ob)
 
             # Store orderbook snapshot for dashboard
@@ -878,6 +998,7 @@ class TradingBot:
                 "spread": best_ask - best_bid,
                 "last_price": live_tkr.get("yes_bid", market.get("last_price", 0)) if live_tkr else market.get("last_price", 0),
                 "volume": live_tkr.get("volume", market.get("volume", 0)) if live_tkr else market.get("volume", 0),
+                "strike_price": self.status.get("strike_price", 0),
             }
             # Enrich agent context with multi-exchange data
             if self.alpha:
@@ -957,11 +1078,11 @@ class TradingBot:
                     decision = {"decision": alpha_override, "confidence": 1.0,
                                 "reasoning": f"Alpha override: {alpha_override}"}
                 else:
-                    decision = await self.agent.analyze_market(market_data, my_pos)
+                    decision = self.agent.analyze_market(market_data, my_pos, alpha_monitor=self.alpha)
                 self.status["last_decision"] = decision
                 return
 
-            # 7. Alpha override or agent decision
+            # 7. Alpha override or rule-based decision
             if alpha_override:
                 action = alpha_override
                 confidence = 1.0
@@ -973,14 +1094,14 @@ class TradingBot:
                     confidence=confidence, reasoning=reasoning, executed=True,
                 )
             else:
-                decision = await self.agent.analyze_market(market_data, my_pos)
+                decision = self.agent.analyze_market(market_data, my_pos, alpha_monitor=self.alpha)
                 self.status["last_decision"] = decision
 
                 action = decision["decision"]
                 confidence = decision["confidence"]
 
-                if action == "HOLD" or confidence < config.MIN_AGENT_CONFIDENCE:
-                    self.status["last_action"] = f"Agent: {action} ({confidence:.0%})"
+                if action == "HOLD" or confidence < config.RULE_MIN_CONFIDENCE:
+                    self.status["last_action"] = f"Rules: {action} ({confidence:.0%})"
                     return
 
             # 8. Execute — cancel any stale resting orders first to prevent accumulation
@@ -1068,7 +1189,7 @@ class TradingBot:
                 if not extreme_momentum:
                     order_id = order.get("order_id")
                     if order_id:
-                        await self._wait_and_retry(ticker, order_id, side, price_cents, qty)
+                        await self._wait_and_retry(ticker, order_id, side, price_cents, qty, initial_order=order)
             else:
                 self.status["last_action"] = "Order rejected"
 
