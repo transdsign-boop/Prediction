@@ -81,22 +81,22 @@ export default function BotStatus({ status }) {
         </div>
       )}
 
-      {/* Inline metrics row */}
-      <div className="flex items-center gap-4 text-[11px] font-mono pt-2 border-t border-white/[0.04]">
-        <span className="text-gray-400">
-          ${typeof balance === 'number' ? balance.toFixed(2) : balance}
-        </span>
-        <span className={pnl >= 0 ? 'text-green-400' : 'text-red-400'}>
+      {/* P&L + metrics row */}
+      <div className="flex items-center gap-3 pt-2 border-t border-white/[0.04]">
+        <span className={`text-lg font-bold font-mono ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
           {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
         </span>
-        {active_position && (
-          <span className={`${posPnl >= 0 ? 'text-green-400/70' : 'text-red-400/70'}`}>
-            pos {posPnl >= 0 ? '+' : ''}{posPnl.toFixed(2)}
-          </span>
-        )}
-        {active_position && (
-          <span className="text-gray-600 truncate">{posLabel}</span>
-        )}
+        <div className="flex items-center gap-3 text-[11px] font-mono text-gray-500">
+          <span>${typeof balance === 'number' ? balance.toFixed(2) : balance}</span>
+          {active_position && (
+            <span className={posPnl >= 0 ? 'text-green-400/70' : 'text-red-400/70'}>
+              pos {posPnl >= 0 ? '+' : ''}{posPnl.toFixed(2)}
+            </span>
+          )}
+          {active_position && (
+            <span className="text-gray-600 truncate">{posLabel}</span>
+          )}
+        </div>
       </div>
     </div>
   )
