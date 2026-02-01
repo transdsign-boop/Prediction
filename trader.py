@@ -249,7 +249,12 @@ class TradingBot:
         return balance_cents / 100.0
 
     async def fetch_active_market(self) -> dict | None:
-        """Find the currently active KXBTC15M market."""
+        """Find the currently active KXBTC15M market.
+
+        When multiple contracts are open (overlap during settlement), prefer
+        the newer contract that still has tradeable time rather than the old
+        one that is about to expire.
+        """
         data = await self._get(
             "/markets",
             params={
@@ -262,9 +267,8 @@ class TradingBot:
         if not markets:
             return None
 
-        # Pick the market closest to closing that is still tradeable
         now = datetime.now(timezone.utc)
-        best = None
+        candidates = []
         for m in markets:
             close_str = m.get("close_time") or m.get("expected_expiration_time")
             if not close_str:
@@ -273,9 +277,28 @@ class TradingBot:
             secs_left = (close_time - now).total_seconds()
             if secs_left > 0:
                 m["_seconds_to_close"] = secs_left
-                if best is None or secs_left < best["_seconds_to_close"]:
-                    best = m
-        return best
+                candidates.append(m)
+
+        if not candidates:
+            return None
+
+        # Sort by time remaining (ascending — soonest to close first)
+        candidates.sort(key=lambda m: m["_seconds_to_close"])
+
+        # If only one market, use it
+        if len(candidates) == 1:
+            return candidates[0]
+
+        # Multiple contracts open (overlap window). If the soonest-to-close
+        # contract is too close to expiry to trade, skip to the next one.
+        # This lets us start trading the new contract immediately instead of
+        # waiting for the old one to settle.
+        if candidates[0]["_seconds_to_close"] < config.MIN_SECONDS_TO_CLOSE:
+            log_event("INFO", f"Skipping expiring contract {candidates[0].get('ticker', '?')} ({candidates[0]['_seconds_to_close']:.0f}s left), switching to {candidates[1].get('ticker', '?')}")
+            return candidates[1]
+
+        # Otherwise pick the soonest (normal behavior)
+        return candidates[0]
 
     async def fetch_orderbook(self, ticker: str) -> dict:
         data = await self._get(f"/markets/{ticker}/orderbook")
@@ -569,13 +592,28 @@ class TradingBot:
         Queries the Kalshi API for each expired market to determine whether
         YES or NO won.  Binary payout: winning side pays 100c/contract,
         losing side pays 0c.
+
+        Runs as a background task so the main loop can immediately start
+        trading the next contract without waiting for settlement.
         """
         if not self.paper_mode:
             return
 
-        expired_tickers = [t for t in self._paper_positions if t != new_ticker]
+        expired_tickers = [t for t in list(self._paper_positions.keys()) if t != new_ticker]
+        if not expired_tickers:
+            return
+
+        try:
+            await self._do_settle(expired_tickers)
+        except Exception as exc:
+            log_event("ERROR", f"[PAPER] Background settlement failed: {exc}")
+
+    async def _do_settle(self, expired_tickers: list[str]):
+        """Inner settlement logic (separated for error handling)."""
         for ticker in expired_tickers:
-            pos = self._paper_positions[ticker]
+            pos = self._paper_positions.get(ticker)
+            if not pos:
+                continue
             qty = pos["quantity"]
             side = pos["side"]
             exposure_cents = pos["market_exposure_cents"]
@@ -800,10 +838,12 @@ class TradingBot:
             # Store raw market for debug (exclude internal computed fields)
             self.status["_raw_market"] = {k: v for k, v in market.items() if not k.startswith("_")}
 
-            # Settle expired paper positions when market changes
+            # Settle expired paper positions when market changes (non-blocking)
             if self.paper_mode and self._last_paper_ticker and self._last_paper_ticker != ticker:
-                await self._settle_paper_positions(ticker)
-                # Clear tracking sets for new contract
+                old_ticker = self._last_paper_ticker
+                asyncio.create_task(self._settle_paper_positions(ticker))
+                log_event("INFO", f"Contract transition: {old_ticker} → {ticker} (settlement running in background)")
+                # Clear tracking sets for new contract immediately
                 self._free_rolled.clear()
                 self._took_profit.clear()
                 if self.alpha:
