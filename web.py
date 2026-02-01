@@ -131,7 +131,7 @@ async def api_logs():
 
 @app.get("/api/trades")
 async def api_trades():
-    return get_trades_with_pnl(100)
+    return get_trades_with_pnl()
 
 
 # ------------------------------------------------------------------

@@ -134,13 +134,21 @@ def get_todays_trades() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_trades_with_pnl(limit: int = 50) -> dict:
-    """Return recent trades with per-market P&L and summary stats."""
+def get_trades_with_pnl(limit: int = 0) -> dict:
+    """Return trades with per-market P&L and summary stats.
+
+    By default returns ALL trades (limit=0). Pass a positive limit to cap results.
+    """
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT ts, market_id, side, action, price, quantity FROM trades ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        if limit > 0:
+            rows = conn.execute(
+                "SELECT ts, market_id, side, action, price, quantity FROM trades ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts, market_id, side, action, price, quantity FROM trades ORDER BY id DESC",
+            ).fetchall()
 
     trades = [dict(r) for r in rows]
 
