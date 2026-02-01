@@ -83,7 +83,6 @@ class TradingBot:
         self._paper_trades: list[dict] = []
         self._last_paper_ticker: str | None = None
         self._paper_orderbook: dict | None = None  # latest orderbook snapshot for realistic paper fills
-        self._estimated_strikes: dict[str, float] = {}  # ticker -> BTC price when first seen (fallback when Kalshi says TBD)
 
         # Live state exposed to the dashboard
         self.status: dict[str, Any] = {
@@ -250,7 +249,12 @@ class TradingBot:
         return balance_cents / 100.0
 
     async def fetch_active_market(self) -> dict | None:
-        """Find the currently active KXBTC15M market."""
+        """Find the currently active KXBTC15M market.
+
+        When multiple contracts are open (overlap during settlement), prefer
+        the newer contract that still has tradeable time rather than the old
+        one that is about to expire.
+        """
         data = await self._get(
             "/markets",
             params={
@@ -263,9 +267,8 @@ class TradingBot:
         if not markets:
             return None
 
-        # Pick the market closest to closing that is still tradeable
         now = datetime.now(timezone.utc)
-        best = None
+        candidates = []
         for m in markets:
             close_str = m.get("close_time") or m.get("expected_expiration_time")
             if not close_str:
@@ -274,9 +277,28 @@ class TradingBot:
             secs_left = (close_time - now).total_seconds()
             if secs_left > 0:
                 m["_seconds_to_close"] = secs_left
-                if best is None or secs_left < best["_seconds_to_close"]:
-                    best = m
-        return best
+                candidates.append(m)
+
+        if not candidates:
+            return None
+
+        # Sort by time remaining (ascending — soonest to close first)
+        candidates.sort(key=lambda m: m["_seconds_to_close"])
+
+        # If only one market, use it
+        if len(candidates) == 1:
+            return candidates[0]
+
+        # Multiple contracts open (overlap window). If the soonest-to-close
+        # contract is too close to expiry to trade, skip to the next one.
+        # This lets us start trading the new contract immediately instead of
+        # waiting for the old one to settle.
+        if candidates[0]["_seconds_to_close"] < config.MIN_SECONDS_TO_CLOSE:
+            log_event("INFO", f"Skipping expiring contract {candidates[0].get('ticker', '?')} ({candidates[0]['_seconds_to_close']:.0f}s left), switching to {candidates[1].get('ticker', '?')}")
+            return candidates[1]
+
+        # Otherwise pick the soonest (normal behavior)
+        return candidates[0]
 
     async def fetch_orderbook(self, ticker: str) -> dict:
         data = await self._get(f"/markets/{ticker}/orderbook")
@@ -699,22 +721,14 @@ class TradingBot:
 
         Tries structured fields first (floor_strike / strike_price),
         then falls back to parsing dollar amounts from yes_sub_title or title.
-        If Kalshi returns 'TBD', uses the live BTC price captured when the
-        contract was first seen as an estimated strike.
         """
-        ticker = market.get("ticker", "")
-
         strike = market.get("floor_strike") or market.get("strike_price")
         if strike:
             try:
                 val = float(strike)
                 # BTC strikes are already in dollars (e.g., 83873.08).
                 # Small values (<1000) might be cents from other market types.
-                result = val if val > 1000 else val / 100.0
-                # Cache the real strike (replaces any estimate)
-                if ticker:
-                    self._estimated_strikes[ticker] = result
-                return result
+                return val if val > 1000 else val / 100.0
             except (ValueError, TypeError):
                 pass
 
@@ -725,25 +739,9 @@ class TradingBot:
             match = re.search(r'\$([0-9,.]+)', text)
             if match:
                 try:
-                    result = float(match.group(1).replace(",", ""))
-                    if ticker:
-                        self._estimated_strikes[ticker] = result
-                    return result
+                    return float(match.group(1).replace(",", ""))
                 except ValueError:
                     pass
-
-        # Kalshi says "TBD" — use estimated strike from BTC price at first sight
-        if ticker and ticker in self._estimated_strikes:
-            return self._estimated_strikes[ticker]
-
-        # Last resort: capture current BTC price as estimated strike
-        if ticker and self.alpha:
-            btc_price = self.alpha.get_weighted_global_price()
-            if btc_price and btc_price > 0:
-                self._estimated_strikes[ticker] = btc_price
-                log_event("INFO", f"Strike TBD for {ticker} — using live BTC ${btc_price:.2f} as estimated strike")
-                return btc_price
-
         return None
 
     async def _wait_and_retry(self, ticker: str, order_id: str, side: str,
