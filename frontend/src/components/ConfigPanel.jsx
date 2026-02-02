@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { fetchConfig, postConfig } from '../api'
 
+// Settings NOT on the Alpha Dashboard (dashboard has inline editing for guards, exits, alpha thresholds)
 const SETTINGS = {
   TRADING_ENABLED: {
     label: 'Trading Enabled',
@@ -19,7 +20,7 @@ const SETTINGS = {
   PAPER_FILL_FRACTION: {
     label: 'Paper Fill Realism',
     unit: '',
-    desc: 'Fraction of orderbook depth available per fill. 0.1 = pessimistic (thin book competition), 0.5 = realistic, 1.0 = optimistic (get all visible depth).',
+    desc: 'Fraction of orderbook depth available per fill. 0.1 = pessimistic, 0.5 = realistic, 1.0 = optimistic.',
   },
   ORDER_SIZE_PCT: {
     label: 'Order Size',
@@ -36,94 +37,20 @@ const SETTINGS = {
     unit: '%',
     desc: 'Maximum percentage of balance at risk across all open positions combined.',
   },
-  MIN_SECONDS_TO_CLOSE: {
-    label: 'Min Time to Enter',
-    unit: 's',
-    desc: 'Don\'t open new positions if fewer than this many seconds remain on the contract.',
-  },
-  MAX_SPREAD_CENTS: {
-    label: 'Max Spread',
-    unit: 'c',
-    desc: 'Skip trading if the bid-ask spread is wider than this. Avoids poor fills in illiquid markets.',
-  },
-  MIN_AGENT_CONFIDENCE: {
-    label: 'Min AI Confidence (legacy)',
-    unit: '',
-    desc: 'Legacy setting. Rule-based Min Confidence below is the active version.',
-  },
-  MIN_CONTRACT_PRICE: {
-    label: 'Min Entry Price',
-    unit: 'c',
-    desc: 'Don\'t buy contracts cheaper than this. Low-price contracts are lottery tickets with low win rates.',
-  },
-  MAX_CONTRACT_PRICE: {
-    label: 'Max Entry Price',
-    unit: 'c',
-    desc: 'Don\'t buy contracts above this price. Expensive contracts have poor risk/reward ratio.',
-  },
-  STOP_LOSS_CENTS: {
-    label: 'Stop Loss',
-    unit: 'c',
-    desc: 'Exit the position if it drops this many cents per contract from your average entry price. Set to 0 to disable.',
-  },
   MAX_DAILY_LOSS_PCT: {
     label: 'Max Loss Limit',
     unit: '%',
     desc: 'Halt all trading if total realized losses exceed this percentage of your starting balance.',
-  },
-  HIT_RUN_PCT: {
-    label: 'Hit & Run Target',
-    unit: '%',
-    desc: 'Instant profit exit - sell entire position as soon as profit hits this %. NO time restrictions. Set to 0 to disable.',
-  },
-  PROFIT_TAKE_PCT: {
-    label: 'Profit Take',
-    unit: '%',
-    desc: 'Sell entire position when profit exceeds this % gain from entry. E.g., 50% on a 30c entry triggers at 45c.',
   },
   PROFIT_TAKE_MIN_SECS: {
     label: 'PT Min Time Left',
     unit: 's',
     desc: 'Only take profit if more than this many seconds remain. Prevents selling right before expiry when settlement may pay more.',
   },
-  FREE_ROLL_PRICE: {
-    label: 'Free Roll Price',
-    unit: 'c',
-    desc: 'Sell half the position at this contract price to lock in capital. The remaining half rides for free.',
-  },
-  HOLD_EXPIRY_SECS: {
-    label: 'Hold to Expiry',
-    unit: 's',
-    desc: 'Don\'t sell in the last N seconds before expiry. Ride the position to settlement instead.',
-  },
-  DELTA_THRESHOLD: {
-    label: 'Momentum Trigger',
-    unit: '$',
-    desc: 'Binance-Coinbase price momentum (in USD) required to force a trade, overriding the AI agent.',
-  },
   EXTREME_DELTA_THRESHOLD: {
     label: 'Extreme Momentum',
     unit: '$',
     desc: 'Momentum threshold for aggressive execution. Crosses the spread (market order) instead of limit.',
-  },
-  ANCHOR_SECONDS_THRESHOLD: {
-    label: 'Anchor Defense',
-    unit: 's',
-    desc: 'Seconds before expiry when anchor defense activates. Projects settlement and can force exit if losing.',
-  },
-  LEAD_LAG_ENABLED: {
-    label: 'Lead-Lag Signal',
-    desc: 'Enable multi-exchange lead-lag signal. Uses all 6 exchanges to detect when BTC moves but Kalshi contracts lag behind.',
-  },
-  LEAD_LAG_THRESHOLD: {
-    label: 'Lead-Lag Threshold',
-    unit: '$',
-    desc: 'How much the weighted global BTC price must differ from strike to trigger. Higher = less sensitive, fewer trades.',
-  },
-  MIN_EDGE_CENTS: {
-    label: 'Min Edge',
-    unit: 'c',
-    desc: 'Minimum mispricing (fair value minus market price) in cents before the bot will trade. Lower = more trades, higher = pickier.',
   },
   RULE_MIN_CONFIDENCE: {
     label: 'Min Confidence',
@@ -138,12 +65,12 @@ const SETTINGS = {
   VOL_HIGH_THRESHOLD: {
     label: 'High Vol Threshold',
     unit: '$/min',
-    desc: 'BTC price movement above this = high volatility mode. Relaxes edge requirement and adds trend-following bonus. E.g., $15/min means BTC is swinging ~$15 every minute.',
+    desc: 'BTC movement above this = high volatility mode. Adds trend-following bonus. BTC median ~$100-150/min.',
   },
   VOL_LOW_THRESHOLD: {
     label: 'Low Vol Threshold',
     unit: '$/min',
-    desc: 'BTC price movement below this = low volatility. Bot sits out (if enabled) because flat markets offer no edge. E.g., $3/min means BTC is barely moving.',
+    desc: 'BTC movement below this = low volatility. Bot sits out (if enabled). BTC quiet periods ~$50-80/min.',
   },
   RULE_SIT_OUT_LOW_VOL: {
     label: 'Sit Out Low Vol',
@@ -162,28 +89,12 @@ const GROUPS = [
     keys: ['TRADING_ENABLED', 'POLL_INTERVAL_SECONDS', 'PAPER_STARTING_BALANCE', 'PAPER_FILL_FRACTION'],
   },
   {
-    title: 'Position Sizing',
-    keys: ['ORDER_SIZE_PCT', 'MAX_POSITION_PCT', 'MAX_TOTAL_EXPOSURE_PCT'],
+    title: 'Sizing & Risk',
+    keys: ['ORDER_SIZE_PCT', 'MAX_POSITION_PCT', 'MAX_TOTAL_EXPOSURE_PCT', 'MAX_DAILY_LOSS_PCT'],
   },
   {
-    title: 'Entry Guards',
-    keys: ['MIN_SECONDS_TO_CLOSE', 'MAX_SPREAD_CENTS', 'MIN_AGENT_CONFIDENCE', 'MIN_CONTRACT_PRICE', 'MAX_CONTRACT_PRICE'],
-  },
-  {
-    title: 'Risk Management',
-    keys: ['STOP_LOSS_CENTS', 'MAX_DAILY_LOSS_PCT'],
-  },
-  {
-    title: 'Profit & Exit',
-    keys: ['HIT_RUN_PCT', 'PROFIT_TAKE_PCT', 'PROFIT_TAKE_MIN_SECS', 'FREE_ROLL_PRICE', 'HOLD_EXPIRY_SECS'],
-  },
-  {
-    title: 'Alpha Engine',
-    keys: ['LEAD_LAG_ENABLED', 'LEAD_LAG_THRESHOLD', 'DELTA_THRESHOLD', 'EXTREME_DELTA_THRESHOLD', 'ANCHOR_SECONDS_THRESHOLD'],
-  },
-  {
-    title: 'Rule-Based Strategy',
-    keys: ['MIN_EDGE_CENTS', 'RULE_MIN_CONFIDENCE', 'FAIR_VALUE_K', 'VOL_HIGH_THRESHOLD', 'VOL_LOW_THRESHOLD', 'RULE_SIT_OUT_LOW_VOL', 'TREND_FOLLOW_VELOCITY'],
+    title: 'Strategy',
+    keys: ['EXTREME_DELTA_THRESHOLD', 'PROFIT_TAKE_MIN_SECS', 'RULE_MIN_CONFIDENCE', 'FAIR_VALUE_K', 'VOL_HIGH_THRESHOLD', 'VOL_LOW_THRESHOLD', 'RULE_SIT_OUT_LOW_VOL', 'TREND_FOLLOW_VELOCITY'],
   },
 ]
 

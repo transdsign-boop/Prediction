@@ -1,4 +1,5 @@
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,6 +10,10 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 import config
+
+# Simple TTL cache for REST orderbook fetches (avoids hammering Kalshi API)
+_ob_cache: dict = {"ticker": "", "data": None, "ts": 0.0}
+_OB_CACHE_TTL = 2.0  # seconds
 from config import get_tunables, set_tunables, restore_tunables, TUNABLE_FIELDS
 from database import init_db, get_recent_logs, get_latest_decision, get_todays_trades, get_trades_with_pnl, get_setting, set_setting
 from alpha_engine import AlphaMonitor
@@ -56,9 +61,28 @@ async def api_status():
     pos_label = "None"
     ticker = bot.status.get("current_market") or ""
 
-    # Use live WebSocket orderbook when available (updates in real-time),
-    # fall back to the cycle-cached snapshot (updates every 10s)
-    live_ob = alpha_monitor.get_live_orderbook(ticker) if ticker else None
+    # Orderbook: REST API (2s cache) → WS → cycle cache
+    # REST is primary because Kalshi WS orderbook_delta often stops sending updates
+    ob_source = "cycle"
+    live_ob = None
+    if ticker:
+        now = time.monotonic()
+        if _ob_cache["ticker"] == ticker and (now - _ob_cache["ts"]) < _OB_CACHE_TTL and _ob_cache["data"]:
+            live_ob = _ob_cache["data"]
+            ob_source = "rest_cached"
+        else:
+            try:
+                live_ob = await bot.fetch_orderbook(ticker)
+                _ob_cache["ticker"] = ticker
+                _ob_cache["data"] = live_ob
+                _ob_cache["ts"] = now
+                ob_source = "rest"
+            except Exception:
+                # REST failed — try WS as fallback
+                live_ob = alpha_monitor.get_live_orderbook(ticker) if ticker else None
+                if live_ob:
+                    ob_source = "ws"
+
     if live_ob:
         yes_orders = live_ob.get("yes", []) if isinstance(live_ob.get("yes"), list) else []
         no_orders = live_ob.get("no", []) if isinstance(live_ob.get("no"), list) else []
@@ -70,9 +94,11 @@ async def api_status():
             "spread": best_ask - best_bid,
             "yes_depth": sum(q for _, q in yes_orders),
             "no_depth": sum(q for _, q in no_orders),
+            "source": ob_source,
         }
     else:
         ob_snapshot = bot.status.get("orderbook") or {}
+        ob_snapshot["source"] = ob_source
         best_bid = ob_snapshot.get("best_bid", 0)
         best_ask = ob_snapshot.get("best_ask", 100)
 
@@ -142,7 +168,23 @@ async def api_status():
         "strike_price": bot.status.get("strike_price"),
         "close_time": bot.status.get("close_time"),
         "market_title": bot.status.get("market_title"),
+        "dashboard": _patch_dashboard(bot.status.get("dashboard"), best_bid, best_ask),
     }
+
+
+def _patch_dashboard(db: dict | None, best_bid: int, best_ask: int) -> dict | None:
+    """Patch dashboard with live orderbook data so spread guard stays fresh."""
+    if not db:
+        return db
+    # Shallow copy to avoid mutating bot.status
+    db = {**db}
+    if db.get("guards"):
+        guards = {**db["guards"]}
+        spread_val = best_ask - best_bid
+        if guards.get("spread"):
+            guards["spread"] = {**guards["spread"], "value": spread_val, "blocked": spread_val > config.MAX_SPREAD_CENTS}
+        db["guards"] = guards
+    return db
 
 
 @app.get("/api/debug/market")

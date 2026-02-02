@@ -103,6 +103,7 @@ class TradingBot:
             "alpha_binance_connected": False,
             "alpha_coinbase_connected": False,
             "alpha_override": None,
+            "dashboard": None,
             "seconds_to_close": None,
             "strike_price": None,
             "close_time": None,
@@ -972,8 +973,12 @@ class TradingBot:
                 return
 
             # 4. Orderbook (always fetch — needed for dashboard + P&L even during guards)
-            live_ob = self.alpha.get_live_orderbook(ticker) if self.alpha else None
-            ob = live_ob if live_ob else await self.fetch_orderbook(ticker)
+            # Prefer REST API — WS orderbook often goes stale (Kalshi stops sending deltas)
+            try:
+                ob = await self.fetch_orderbook(ticker)
+            except Exception:
+                live_ob = self.alpha.get_live_orderbook(ticker) if self.alpha else None
+                ob = live_ob if live_ob else {"yes": [], "no": []}
             if self.paper_mode:
                 self._paper_orderbook = ob
             spread_ok, best_bid, best_ask = self._spread_guard(ob)
@@ -1022,6 +1027,144 @@ class TradingBot:
             other_exposure = total_exposure - active_cost  # cost basis of non-active positions
             self.status["total_account_value"] = balance + active_mtm + other_exposure
             self.status["start_balance"] = start_bal
+
+            # ---- Dashboard data (observational — always computed, no impact on trading) ----
+            dashboard = {}
+            strike = self.status.get("strike_price")
+            has_pos = my_pos is not None and (my_pos.get("position", 0) or 0) != 0
+
+            # Fair value + edge (requires alpha + strike + time)
+            if self.alpha and strike and strike > 0 and secs_left > 0:
+                try:
+                    fv = self.alpha.get_fair_value(strike, secs_left)
+                    dashboard["fair_value"] = fv
+                    dashboard["yes_edge"] = fv["fair_yes_cents"] - best_ask
+                    dashboard["no_edge"] = (100 - fv["fair_yes_cents"]) - (100 - best_bid)
+                except Exception:
+                    dashboard["fair_value"] = None
+                    dashboard["yes_edge"] = 0
+                    dashboard["no_edge"] = 0
+            else:
+                dashboard["fair_value"] = None
+                dashboard["yes_edge"] = 0
+                dashboard["no_edge"] = 0
+
+            # Time decay factor
+            dashboard["time_factor"] = min(1.0, max(0.0, secs_left / 900.0)) if secs_left else 0.0
+
+            # Guard states
+            spread_val = best_ask - best_bid
+            max_exposure = balance * config.MAX_TOTAL_EXPOSURE_PCT / 100.0
+            price_est = best_ask if best_ask < 100 else 50
+            position_budget = balance * config.MAX_POSITION_PCT / 100.0
+            max_qty = max(1, int(position_budget / (price_est / 100.0))) if price_est > 0 else 1
+            current_qty = abs(my_pos.get("position", 0) or 0) if my_pos else 0
+            pos_val = (my_pos.get("position", 0) or 0) if my_pos else 0
+
+            dashboard["guards"] = {
+                "time": {
+                    "blocked": secs_left < config.MIN_SECONDS_TO_CLOSE if secs_left else True,
+                    "value": round(secs_left or 0, 0),
+                    "threshold": config.MIN_SECONDS_TO_CLOSE,
+                },
+                "spread": {
+                    "blocked": spread_val > config.MAX_SPREAD_CENTS,
+                    "value": spread_val,
+                    "threshold": config.MAX_SPREAD_CENTS,
+                },
+                "daily_loss": {
+                    "blocked": settled_pnl < -max_daily_loss,
+                    "value": round(settled_pnl, 2),
+                    "threshold": round(-max_daily_loss, 2),
+                },
+                "hold_expiry": {
+                    "blocked": secs_left < config.HOLD_EXPIRY_SECS if secs_left else False,
+                    "value": round(secs_left or 0, 0),
+                    "threshold": config.HOLD_EXPIRY_SECS,
+                    "has_position": has_pos,
+                },
+                "price_min": {
+                    "blocked": best_ask < config.MIN_CONTRACT_PRICE and (100 - best_bid) < config.MIN_CONTRACT_PRICE,
+                    "value_yes": best_ask,
+                    "value_no": 100 - best_bid,
+                    "threshold": config.MIN_CONTRACT_PRICE,
+                },
+                "price_max": {
+                    "blocked": best_ask > config.MAX_CONTRACT_PRICE and (100 - best_bid) > config.MAX_CONTRACT_PRICE,
+                    "value_yes": best_ask,
+                    "value_no": 100 - best_bid,
+                    "threshold": config.MAX_CONTRACT_PRICE,
+                },
+                "exposure": {
+                    "blocked": total_exposure >= max_exposure,
+                    "value": round(total_exposure, 2),
+                    "threshold": round(max_exposure, 2),
+                },
+                "position_size": {
+                    "blocked": current_qty >= max_qty,
+                    "value": current_qty,
+                    "threshold": max_qty,
+                },
+                "same_side": {
+                    "blocked": False,
+                    "holding": "YES" if pos_val > 0 else ("NO" if pos_val < 0 else "NONE"),
+                },
+                "tp_reentry": {
+                    "blocked": ticker in self._took_profit if ticker else False,
+                },
+            }
+
+            # Exit rule states
+            exits = {}
+            if has_pos:
+                eq = abs(pos_val)
+                pe = (my_pos.get("market_exposure", 0) or 0)
+                sp = best_bid if pos_val > 0 else (100 - best_ask)
+                mtm_e = best_bid * pos_val if pos_val > 0 else (100 - best_ask) * eq if pos_val < 0 else 0
+                avg_c = pe / eq if eq > 0 else 0
+                loss_p = (pe - mtm_e) / eq if eq > 0 else 0
+                gain_p = ((sp - avg_c) / avg_c * 100) if avg_c > 0 else 0
+
+                exits["stop_loss"] = {
+                    "triggered": config.STOP_LOSS_CENTS > 0 and loss_p >= config.STOP_LOSS_CENTS,
+                    "value": round(loss_p, 1),
+                    "threshold": config.STOP_LOSS_CENTS,
+                }
+                exits["hit_and_run"] = {
+                    "triggered": config.HIT_RUN_PCT > 0 and gain_p >= config.HIT_RUN_PCT,
+                    "value": round(gain_p, 1),
+                    "threshold": config.HIT_RUN_PCT,
+                    "enabled": config.HIT_RUN_PCT > 0,
+                }
+                exits["profit_take"] = {
+                    "triggered": gain_p >= config.PROFIT_TAKE_PCT and secs_left > config.PROFIT_TAKE_MIN_SECS,
+                    "value": round(gain_p, 1),
+                    "threshold": config.PROFIT_TAKE_PCT,
+                    "min_secs": config.PROFIT_TAKE_MIN_SECS,
+                }
+                exits["free_roll"] = {
+                    "triggered": sp >= config.FREE_ROLL_PRICE and eq >= 2 and ticker not in self._free_rolled,
+                    "value": sp,
+                    "threshold": config.FREE_ROLL_PRICE,
+                    "qty": eq,
+                    "already_rolled": ticker in self._free_rolled,
+                }
+            else:
+                exits["stop_loss"] = {"triggered": False, "value": 0, "threshold": config.STOP_LOSS_CENTS}
+                exits["hit_and_run"] = {"triggered": False, "value": 0, "threshold": config.HIT_RUN_PCT, "enabled": config.HIT_RUN_PCT > 0}
+                exits["profit_take"] = {"triggered": False, "value": 0, "threshold": config.PROFIT_TAKE_PCT, "min_secs": config.PROFIT_TAKE_MIN_SECS}
+                exits["free_roll"] = {"triggered": False, "value": 0, "threshold": config.FREE_ROLL_PRICE, "qty": 0, "already_rolled": False}
+            dashboard["exits"] = exits
+
+            # Config thresholds for frontend display
+            dashboard["lead_lag_enabled"] = config.LEAD_LAG_ENABLED
+            dashboard["lead_lag_threshold"] = config.LEAD_LAG_THRESHOLD
+            dashboard["delta_threshold"] = config.DELTA_THRESHOLD
+            dashboard["extreme_delta_threshold"] = config.EXTREME_DELTA_THRESHOLD
+            dashboard["anchor_seconds_threshold"] = config.ANCHOR_SECONDS_THRESHOLD
+            dashboard["min_edge_cents"] = config.MIN_EDGE_CENTS
+
+            self.status["dashboard"] = dashboard
 
             # 5. Exit logic (stop-loss + profit-taking) — before time guard
             #    so hold-to-expiry can still fire, but after P&L is computed
@@ -1152,27 +1295,36 @@ class TradingBot:
                 # Override 0: Lead-Lag Signal (weighted global price vs strike)
                 # Uses all 6 exchanges to detect when BTC has moved but Kalshi
                 # contracts haven't repriced yet (the "60-second lag" play).
+                # Only overrides if actual edge exists (Kalshi hasn't caught up).
                 strike = self._extract_strike(market)
                 if config.LEAD_LAG_ENABLED and strike and strike > 0:
                     signal, diff = self.alpha.get_signal(strike)
                     self.status["alpha_signal"] = signal
                     self.status["alpha_signal_diff"] = diff
-                    if signal == "BULLISH":
+                    yes_edge = dashboard.get("yes_edge", 0)
+                    no_edge = dashboard.get("no_edge", 0)
+                    min_edge = config.MIN_EDGE_CENTS
+                    if signal == "BULLISH" and yes_edge >= min_edge:
                         alpha_override = "BUY_YES"
-                        log_event("ALPHA", f"Lead-lag BUY_YES: global ${self.alpha.get_weighted_global_price():.2f} > strike ${strike:.2f} by ${diff:.2f}")
-                    elif signal == "BEARISH":
+                        log_event("ALPHA", f"Lead-lag BUY_YES: global ${self.alpha.get_weighted_global_price():.2f} > strike ${strike:.2f} by ${diff:.2f} (edge {yes_edge}c)")
+                    elif signal == "BEARISH" and no_edge >= min_edge:
                         alpha_override = "BUY_NO"
-                        log_event("ALPHA", f"Lead-lag BUY_NO: global ${self.alpha.get_weighted_global_price():.2f} < strike ${strike:.2f} by ${abs(diff):.2f}")
+                        log_event("ALPHA", f"Lead-lag BUY_NO: global ${self.alpha.get_weighted_global_price():.2f} < strike ${strike:.2f} by ${abs(diff):.2f} (edge {no_edge}c)")
+                    elif signal != "NEUTRAL":
+                        log_event("ALPHA", f"Lead-lag {signal} but no edge (YES:{yes_edge}c NO:{no_edge}c < {min_edge}c) — deferring to rules")
 
                 # Override 1: Front-Run (delta momentum — deviation from rolling baseline)
-                # Only fires if lead-lag didn't already trigger
+                # Only fires if lead-lag didn't already trigger, and only with edge
                 if not alpha_override:
-                    if momentum > config.DELTA_THRESHOLD:
+                    yes_edge = dashboard.get("yes_edge", 0)
+                    no_edge = dashboard.get("no_edge", 0)
+                    min_edge = config.MIN_EDGE_CENTS
+                    if momentum > config.DELTA_THRESHOLD and yes_edge >= min_edge:
                         alpha_override = "BUY_YES"
-                        log_event("ALPHA", f"Front-run BUY_YES: momentum={momentum:+.2f} > {config.DELTA_THRESHOLD}")
-                    elif momentum < -config.DELTA_THRESHOLD:
+                        log_event("ALPHA", f"Front-run BUY_YES: momentum={momentum:+.2f} > {config.DELTA_THRESHOLD} (edge {yes_edge}c)")
+                    elif momentum < -config.DELTA_THRESHOLD and no_edge >= min_edge:
                         alpha_override = "BUY_NO"
-                        log_event("ALPHA", f"Front-run BUY_NO: momentum={momentum:+.2f} < -{config.DELTA_THRESHOLD}")
+                        log_event("ALPHA", f"Front-run BUY_NO: momentum={momentum:+.2f} < -{config.DELTA_THRESHOLD} (edge {no_edge}c)")
 
                 # Override 2: Anchor Defense (near expiry + holding position)
                 if secs_left < config.ANCHOR_SECONDS_THRESHOLD and my_pos:
@@ -1249,7 +1401,10 @@ class TradingBot:
                 self.status["last_action"] = "Already took profit — no re-entry"
                 return
 
-            # Aggressive pricing on extreme momentum, else standard limit
+            # Entry pricing strategy based on signal urgency:
+            # - Extreme momentum: cross spread immediately (market-take)
+            # - Alpha override (lead-lag/momentum/anchor): cross spread (time-sensitive edge)
+            # - Rule-based: midpoint of spread (balanced fill vs. price improvement)
             extreme_momentum = (
                 self.alpha
                 and abs(self.alpha.delta_momentum) > config.EXTREME_DELTA_THRESHOLD
@@ -1257,9 +1412,26 @@ class TradingBot:
             if extreme_momentum and best_ask < 100 and best_bid > 0:
                 # Cross the spread — hit the ask (YES) or bid (NO)
                 price_cents = best_ask if side == "yes" else (100 - best_bid)
-                log_event("ALPHA", f"Extreme momentum ({self.alpha.delta_momentum:+.2f}) — aggressive pricing at {price_cents}c")
+                log_event("ALPHA", f"Extreme momentum ({self.alpha.delta_momentum:+.2f}) — crossing spread at {price_cents}c")
+            elif alpha_override and best_ask < 100 and best_bid > 0:
+                # Alpha signals are time-sensitive — cross the spread to ensure fill
+                price_cents = best_ask if side == "yes" else (100 - best_bid)
+                log_event("ALPHA", f"Alpha override — crossing spread at {price_cents}c")
+            elif best_ask < 100 and best_bid > 0:
+                if self.paper_mode:
+                    # Paper mode: cross spread to get realistic fills (paper can't simulate resting orders)
+                    price_cents = best_ask if side == "yes" else (100 - best_bid)
+                else:
+                    # Live: start at midpoint for faster fills with some price improvement
+                    if side == "yes":
+                        price_cents = (best_bid + best_ask + 1) // 2
+                    else:
+                        no_bid = 100 - best_ask
+                        no_ask = 100 - best_bid
+                        price_cents = (no_bid + no_ask + 1) // 2
+                    price_cents = max(1, min(99, price_cents))
             else:
-                # Improve the best bid by 1c
+                # One-sided market fallback
                 price_cents = best_bid + 1 if side == "yes" else (100 - best_ask + 1)
                 price_cents = max(1, min(99, price_cents))
 
@@ -1308,8 +1480,8 @@ class TradingBot:
             order = await self.place_order(ticker, side, price_cents, qty)
             if order:
                 self.status["last_action"] = f"Placed {side.upper()} @ {price_cents}c x{qty}"
-                # Fill-or-cancel for non-extreme orders
-                if not extreme_momentum:
+                # Fill-or-cancel: skip retries for spread-crossing orders (already at best price)
+                if not extreme_momentum and not alpha_override:
                     order_id = order.get("order_id")
                     if order_id:
                         await self._wait_and_retry(ticker, order_id, side, price_cents, qty, initial_order=order)

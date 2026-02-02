@@ -5,6 +5,7 @@ import ContractCard from './components/ContractCard'
 import BotStatus from './components/BotStatus'
 import TradeLog from './components/TradeLog'
 import ExchangeMonitor from './components/ExchangeMonitor'
+import AlphaDashboard from './components/AlphaDashboard'
 import Collapsible from './components/Collapsible'
 import ChatPanel from './components/ChatPanel'
 import ConfigPanel from './components/ConfigPanel'
@@ -32,6 +33,7 @@ export default function App() {
       <ContractCard status={status} />
       <BotStatus status={status} />
       <ExchangeMonitor status={status} />
+      <AlphaDashboard status={status} />
       <TradeLog tradeData={tradeData} />
 
       <div className="mt-6 space-y-2">

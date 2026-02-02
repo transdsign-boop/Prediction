@@ -148,6 +148,7 @@ class AlphaMonitor:
         self.kalshi_connected: bool = False
         self.kalshi_ticker: dict[str, dict] = {}
         self.kalshi_orderbook: dict[str, dict] = {}
+        self._kalshi_ob_ts: dict[str, float] = {}  # last update timestamp per ticker
         self.kalshi_fills: list[dict] = []
         self._kalshi_subscribed_ob: set[str] = set()
         self._kalshi_ws = None
@@ -434,6 +435,7 @@ class AlphaMonitor:
                                         "yes": msg.get("yes", []),
                                         "no": msg.get("no", []),
                                     }
+                                    self._kalshi_ob_ts[ticker] = time.time()
 
                             elif msg_type == "orderbook_delta":
                                 ticker = msg.get("market_ticker", "")
@@ -452,6 +454,7 @@ class AlphaMonitor:
                                         self.kalshi_orderbook[ticker][side] = [
                                             [p, q] for p, q in book_dict.items()
                                         ]
+                                    self._kalshi_ob_ts[ticker] = time.time()
 
                             elif msg_type == "fill":
                                 self.kalshi_fills.append(msg)
@@ -513,8 +516,15 @@ class AlphaMonitor:
             except Exception as exc:
                 log_event("ALPHA", f"Failed to subscribe orderbook for {ticker}: {exc}")
 
-    def get_live_orderbook(self, ticker: str) -> dict | None:
-        return self.kalshi_orderbook.get(ticker)
+    def get_live_orderbook(self, ticker: str, max_age: float = 5.0) -> dict | None:
+        """Return WS orderbook only if it was updated within max_age seconds."""
+        ob = self.kalshi_orderbook.get(ticker)
+        if not ob:
+            return None
+        last_ts = self._kalshi_ob_ts.get(ticker, 0)
+        if time.time() - last_ts > max_age:
+            return None  # Stale — let caller fall back to REST
+        return ob
 
     def get_live_ticker(self, ticker: str) -> dict | None:
         return self.kalshi_ticker.get(ticker)

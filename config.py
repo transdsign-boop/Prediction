@@ -78,15 +78,15 @@ HOLD_EXPIRY_SECS = 120            # don't sell in last 2 minutes — ride to set
 DELTA_THRESHOLD = 20              # USD — front-run trigger (momentum deviation)
 EXTREME_DELTA_THRESHOLD = 50      # USD — aggressive execution trigger
 ANCHOR_SECONDS_THRESHOLD = 60     # seconds — anchor defense trigger
-LEAD_LAG_THRESHOLD = 15           # USD — lead-lag signal trigger (global price vs strike)
+LEAD_LAG_THRESHOLD = 75           # USD — lead-lag signal trigger (global price vs strike). BTC moves ~$77/min avg.
 LEAD_LAG_ENABLED = os.getenv("LEAD_LAG_ENABLED", "false").lower() == "true"  # Enable/disable lead-lag signal
 
 # Rule-based strategy (replaces Claude AI fallback)
-VOL_HIGH_THRESHOLD = float(os.getenv("VOL_HIGH_THRESHOLD", "15.0"))           # $/min — above = high vol (trend-follow mode)
-VOL_LOW_THRESHOLD = float(os.getenv("VOL_LOW_THRESHOLD", "3.0"))             # $/min — below = low vol (sit out — no edge in flat markets)
-FAIR_VALUE_K = float(os.getenv("FAIR_VALUE_K", "1.5"))                       # logistic steepness — 1.5 = moderate responsiveness
+VOL_HIGH_THRESHOLD = float(os.getenv("VOL_HIGH_THRESHOLD", "400.0"))          # $/min tick path — above = high vol (trend-follow). Tick path ~5x candle; BTC avg candle ~$87 ≈ $500 tick.
+VOL_LOW_THRESHOLD = float(os.getenv("VOL_LOW_THRESHOLD", "200.0"))            # $/min tick path — below = low vol (sit out). BTC quiet candle ~$40 ≈ $200 tick.
+FAIR_VALUE_K = float(os.getenv("FAIR_VALUE_K", "0.6"))                       # logistic steepness — 0.6 = moderate. Lower = less extreme probabilities, finds more edge in 15-85c range
 MIN_EDGE_CENTS = int(os.getenv("MIN_EDGE_CENTS", "5"))                      # min mispricing to trade (5c = good balance for 15m binaries)
-TREND_FOLLOW_VELOCITY = float(os.getenv("TREND_FOLLOW_VELOCITY", "0.2"))     # $/sec — BTC ~$12/min triggers trend bonus
+TREND_FOLLOW_VELOCITY = float(os.getenv("TREND_FOLLOW_VELOCITY", "2.0"))     # $/sec — BTC ~$120/min = $2/sec triggers trend bonus
 RULE_SIT_OUT_LOW_VOL = os.getenv("RULE_SIT_OUT_LOW_VOL", "true").lower() == "true"
 RULE_MIN_CONFIDENCE = float(os.getenv("RULE_MIN_CONFIDENCE", "0.6"))         # min confidence to execute (0.6 = needs real edge + time)
 
@@ -120,13 +120,13 @@ TUNABLE_FIELDS = {
     "DELTA_THRESHOLD":          {"type": "int",   "min": 5,   "max": 200},
     "EXTREME_DELTA_THRESHOLD":  {"type": "int",   "min": 10,  "max": 500},
     "ANCHOR_SECONDS_THRESHOLD": {"type": "int",   "min": 15,  "max": 120},
-    "LEAD_LAG_THRESHOLD":       {"type": "int",   "min": 5,   "max": 200},
+    "LEAD_LAG_THRESHOLD":       {"type": "int",   "min": 10,  "max": 500},
     "LEAD_LAG_ENABLED":         {"type": "bool"},
-    "VOL_HIGH_THRESHOLD":       {"type": "float", "min": 1.0, "max": 100.0},
-    "VOL_LOW_THRESHOLD":        {"type": "float", "min": 0.5, "max": 50.0},
-    "FAIR_VALUE_K":             {"type": "float", "min": 0.5, "max": 5.0},
+    "VOL_HIGH_THRESHOLD":       {"type": "float", "min": 50.0, "max": 2000.0},
+    "VOL_LOW_THRESHOLD":        {"type": "float", "min": 20.0, "max": 1000.0},
+    "FAIR_VALUE_K":             {"type": "float", "min": 0.1, "max": 3.0},
     "MIN_EDGE_CENTS":           {"type": "int",   "min": 1,  "max": 30},
-    "TREND_FOLLOW_VELOCITY":    {"type": "float", "min": 0.05, "max": 5.0},
+    "TREND_FOLLOW_VELOCITY":    {"type": "float", "min": 0.5, "max": 20.0},
     "RULE_SIT_OUT_LOW_VOL":     {"type": "bool"},
     "RULE_MIN_CONFIDENCE":      {"type": "float", "min": 0.3, "max": 0.95},
     "PAPER_STARTING_BALANCE":   {"type": "float", "min": 10,  "max": 100000},
