@@ -1,20 +1,22 @@
 import { usePolling } from './hooks/usePolling'
 import { fetchStatus, fetchLogs, fetchTrades } from './api'
 import Header from './components/Header'
-import AgentHero from './components/AgentHero'
-import KeyMetrics from './components/KeyMetrics'
-import MarketCard from './components/MarketCard'
-import ContractTimer from './components/ContractTimer'
+import ContractCard from './components/ContractCard'
+import BotStatus from './components/BotStatus'
 import TradeLog from './components/TradeLog'
+import ExchangeMonitor from './components/ExchangeMonitor'
+import AlphaDashboard from './components/AlphaDashboard'
 import Collapsible from './components/Collapsible'
 import ChatPanel from './components/ChatPanel'
 import ConfigPanel from './components/ConfigPanel'
 import LogPanel from './components/LogPanel'
+import AnalyticsPanel from './components/AnalyticsPanel'
 
 export default function App() {
   const { data: status, refresh: refreshStatus } = usePolling(fetchStatus, 2000)
   const { data: logs } = usePolling(fetchLogs, 3000)
-  const { data: tradeData } = usePolling(fetchTrades, 5000)
+  const tradeMode = status?.paper_mode ? 'paper' : 'live'
+  const { data: tradeData } = usePolling(() => fetchTrades(tradeMode), 5000)
 
   if (!status) {
     return (
@@ -30,13 +32,16 @@ export default function App() {
   return (
     <div className="min-h-screen max-w-2xl mx-auto px-4 py-6 md:py-10">
       <Header status={status} onAction={refreshStatus} />
-      <AgentHero status={status} />
-      <KeyMetrics status={status} />
-      <MarketCard status={status} />
-      <ContractTimer status={status} />
-      <TradeLog tradeData={tradeData} />
+      <ContractCard status={status} />
+      <BotStatus status={status} />
+      <ExchangeMonitor status={status} />
+      <AlphaDashboard status={status} />
+      <TradeLog tradeData={tradeData} mode={tradeMode} />
 
       <div className="mt-6 space-y-2">
+        <Collapsible title="Trade Analytics" badge={tradeData?.summary?.total_trades ? `${tradeData.summary.total_trades} trades` : null}>
+          <AnalyticsPanel mode={tradeMode} />
+        </Collapsible>
         <Collapsible title="Chat with Agent">
           <ChatPanel />
         </Collapsible>

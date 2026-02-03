@@ -28,9 +28,13 @@ body {
   transition: max-height 0.3s ease-out;
 }
 .collapse-body.open {
-  max-height: 2000px;
+  max-height: 5000px;
+  overflow-y: auto;
   transition: max-height 0.5s ease-in;
 }
+.collapse-body::-webkit-scrollbar { width: 4px; }
+.collapse-body::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 2px; }
+.collapse-body::-webkit-scrollbar-track { background: transparent; }
 
 /* Log panel */
 .log-box {

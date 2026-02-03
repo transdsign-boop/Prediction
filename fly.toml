@@ -4,7 +4,7 @@
 #
 
 app = 'kalshibot'
-primary_region = 'iad'
+primary_region = 'gru'
 
 [build]
   dockerfile = "Dockerfile"
@@ -18,8 +18,8 @@ primary_region = 'iad'
   processes = ['app']
 
 [mounts]
-  source = 'kalshibot_data'
-  destination = '/data'
+  source = "kalshibot_data"
+  destination = "/data"
 
 [[vm]]
   memory = '1gb'

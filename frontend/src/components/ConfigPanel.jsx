@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { fetchConfig, postConfig } from '../api'
 
+// Settings NOT on the Alpha Dashboard (dashboard has inline editing for guards, exits, alpha thresholds)
 const SETTINGS = {
   TRADING_ENABLED: {
     label: 'Trading Enabled',
@@ -15,6 +16,11 @@ const SETTINGS = {
     label: 'Paper Balance',
     unit: '$',
     desc: 'Starting balance for paper trading. Use the Reset button in the header to apply a new value.',
+  },
+  PAPER_FILL_FRACTION: {
+    label: 'Paper Fill Realism',
+    unit: '',
+    desc: 'Fraction of orderbook depth available per fill. 0.1 = pessimistic, 0.5 = realistic, 1.0 = optimistic.',
   },
   ORDER_SIZE_PCT: {
     label: 'Order Size',
@@ -31,102 +37,73 @@ const SETTINGS = {
     unit: '%',
     desc: 'Maximum percentage of balance at risk across all open positions combined.',
   },
-  MIN_SECONDS_TO_CLOSE: {
-    label: 'Min Time to Enter',
-    unit: 's',
-    desc: 'Don\'t open new positions if fewer than this many seconds remain on the contract.',
-  },
-  MAX_SPREAD_CENTS: {
-    label: 'Max Spread',
-    unit: 'c',
-    desc: 'Skip trading if the bid-ask spread is wider than this. Avoids poor fills in illiquid markets.',
-  },
-  MIN_AGENT_CONFIDENCE: {
-    label: 'Min AI Confidence',
-    unit: '',
-    desc: 'Minimum confidence (0-1) from the AI agent to execute a trade. Higher = more selective.',
-  },
-  MIN_CONTRACT_PRICE: {
-    label: 'Min Entry Price',
-    unit: 'c',
-    desc: 'Don\'t buy contracts cheaper than this. Low-price contracts are lottery tickets with low win rates.',
-  },
-  MAX_CONTRACT_PRICE: {
-    label: 'Max Entry Price',
-    unit: 'c',
-    desc: 'Don\'t buy contracts above this price. Expensive contracts have poor risk/reward ratio.',
-  },
-  STOP_LOSS_CENTS: {
-    label: 'Stop Loss',
-    unit: 'c',
-    desc: 'Exit the position if it drops this many cents per contract from your average entry price. Set to 0 to disable.',
-  },
   MAX_DAILY_LOSS_PCT: {
     label: 'Max Loss Limit',
     unit: '%',
     desc: 'Halt all trading if total realized losses exceed this percentage of your starting balance.',
   },
-  PROFIT_TAKE_PCT: {
-    label: 'Profit Take',
-    unit: '%',
-    desc: 'Sell entire position when profit exceeds this % gain from entry. E.g., 50% on a 30c entry triggers at 45c.',
+  STOP_LOSS_CENTS: {
+    label: 'Stop Loss',
+    unit: 'c',
+    desc: 'Exit position if down this many cents per contract. Higher = more room before cutting losses.',
   },
   PROFIT_TAKE_MIN_SECS: {
     label: 'PT Min Time Left',
     unit: 's',
     desc: 'Only take profit if more than this many seconds remain. Prevents selling right before expiry when settlement may pay more.',
   },
-  FREE_ROLL_PRICE: {
-    label: 'Free Roll Price',
-    unit: 'c',
-    desc: 'Sell half the position at this contract price to lock in capital. The remaining half rides for free.',
-  },
-  HOLD_EXPIRY_SECS: {
-    label: 'Hold to Expiry',
-    unit: 's',
-    desc: 'Don\'t sell in the last N seconds before expiry. Ride the position to settlement instead.',
-  },
-  DELTA_THRESHOLD: {
-    label: 'Momentum Trigger',
-    unit: '$',
-    desc: 'Binance-Coinbase price momentum (in USD) required to force a trade, overriding the AI agent.',
-  },
   EXTREME_DELTA_THRESHOLD: {
     label: 'Extreme Momentum',
     unit: '$',
     desc: 'Momentum threshold for aggressive execution. Crosses the spread (market order) instead of limit.',
   },
-  ANCHOR_SECONDS_THRESHOLD: {
-    label: 'Anchor Defense',
-    unit: 's',
-    desc: 'Seconds before expiry when anchor defense activates. Projects settlement and can force exit if losing.',
+  RULE_MIN_CONFIDENCE: {
+    label: 'Min Confidence',
+    unit: '',
+    desc: 'Minimum confidence score (0-1) from the rule engine to execute. Combines edge size, trend, and time remaining.',
+  },
+  FAIR_VALUE_K: {
+    label: 'Fair Value Steepness',
+    unit: '',
+    desc: 'How aggressively fair value reacts to BTC distance from strike. Higher = more decisive when BTC is clearly above/below.',
+  },
+  VOL_HIGH_THRESHOLD: {
+    label: 'High Vol Threshold',
+    unit: '$/min',
+    desc: 'BTC movement above this = high volatility mode. Adds trend-following bonus. BTC median ~$100-150/min.',
+  },
+  VOL_LOW_THRESHOLD: {
+    label: 'Low Vol Threshold',
+    unit: '$/min',
+    desc: 'BTC movement below this = low volatility. Bot sits out (if enabled). BTC quiet periods ~$50-80/min.',
+  },
+  RULE_SIT_OUT_LOW_VOL: {
+    label: 'Sit Out Low Vol',
+    desc: 'Skip trading entirely when volatility is below the low threshold. Disable to trade in flat markets too.',
+  },
+  TREND_FOLLOW_VELOCITY: {
+    label: 'Trend Velocity',
+    unit: '$/s',
+    desc: 'Minimum BTC price movement speed for trend-following bonus in high-vol mode. Lower = easier to trigger.',
+  },
+  EDGE_EXIT_ENABLED: {
+    label: 'Edge Exit',
+    desc: 'Exit positions when remaining edge evaporates. Allows re-entry after cooldown with higher edge requirement.',
   },
 }
 
 const GROUPS = [
   {
     title: 'General',
-    keys: ['TRADING_ENABLED', 'POLL_INTERVAL_SECONDS', 'PAPER_STARTING_BALANCE'],
+    keys: ['TRADING_ENABLED', 'POLL_INTERVAL_SECONDS', 'PAPER_STARTING_BALANCE', 'PAPER_FILL_FRACTION'],
   },
   {
-    title: 'Position Sizing',
-    keys: ['ORDER_SIZE_PCT', 'MAX_POSITION_PCT', 'MAX_TOTAL_EXPOSURE_PCT'],
+    title: 'Sizing & Risk',
+    keys: ['ORDER_SIZE_PCT', 'MAX_POSITION_PCT', 'MAX_TOTAL_EXPOSURE_PCT', 'MAX_DAILY_LOSS_PCT', 'STOP_LOSS_CENTS'],
   },
   {
-    title: 'Entry Guards',
-    keys: ['MIN_SECONDS_TO_CLOSE', 'MAX_SPREAD_CENTS', 'MIN_AGENT_CONFIDENCE', 'MIN_CONTRACT_PRICE', 'MAX_CONTRACT_PRICE'],
-  },
-  {
-    title: 'Risk Management',
-    keys: ['STOP_LOSS_CENTS', 'MAX_DAILY_LOSS_PCT'],
-  },
-  {
-    title: 'Profit & Exit',
-    keys: ['PROFIT_TAKE_PCT', 'PROFIT_TAKE_MIN_SECS', 'FREE_ROLL_PRICE', 'HOLD_EXPIRY_SECS'],
-  },
-  {
-    title: 'Alpha Engine',
-    keys: ['DELTA_THRESHOLD', 'EXTREME_DELTA_THRESHOLD', 'ANCHOR_SECONDS_THRESHOLD'],
+    title: 'Strategy',
+    keys: ['EDGE_EXIT_ENABLED', 'EXTREME_DELTA_THRESHOLD', 'PROFIT_TAKE_MIN_SECS', 'RULE_MIN_CONFIDENCE', 'FAIR_VALUE_K', 'VOL_HIGH_THRESHOLD', 'VOL_LOW_THRESHOLD', 'RULE_SIT_OUT_LOW_VOL', 'TREND_FOLLOW_VELOCITY'],
   },
 ]
 
@@ -135,8 +112,14 @@ export default function ConfigPanel() {
   const [statusMsg, setStatusMsg] = useState({ text: '', ok: true })
   const [saving, setSaving] = useState(false)
 
+  const refresh = () => fetchConfig().then(setCfgMeta).catch(console.error)
+
   useEffect(() => {
-    fetchConfig().then(setCfgMeta).catch(console.error)
+    refresh()
+    // Re-fetch when config is changed elsewhere (e.g. analytics suggestion applied)
+    const handler = () => refresh()
+    window.addEventListener('config-updated', handler)
+    return () => window.removeEventListener('config-updated', handler)
   }, [])
 
   function showStatus(text, ok) {
@@ -223,7 +206,7 @@ export default function ConfigPanel() {
                           value={spec.value}
                           min={spec.min}
                           max={spec.max}
-                          step={spec.type === 'float' ? '0.01' : '1'}
+                          step={spec.type === 'float' ? (spec.min < 0.001 ? '0.00001' : '0.01') : '1'}
                           onChange={e => {
                             const val = spec.type === 'float' ? parseFloat(e.target.value) : parseInt(e.target.value, 10)
                             updateLocalValue(key, val)
