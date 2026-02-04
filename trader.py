@@ -1625,28 +1625,27 @@ class TradingBot:
                             self.status["last_action"] = "TP: sell order rejected"
                         return
 
-                    # Rule: Free Roll — sell half at intermediate profit to lock in capital
+                    # Rule: Free Roll — take profit on entire position when price threshold hit
                     if (current_value >= config.FREE_ROLL_PRICE
-                            and ticker not in self._free_rolled
-                            and abs(pos_qty) >= 2):
-                        half_qty = max(1, abs(pos_qty) // 2)
-                        log_event("TRADE", f"Free roll: {current_value}c >= {config.FREE_ROLL_PRICE}c — selling {half_qty}/{abs(pos_qty)} to lock in capital")
-                        order = await self.close_position(ticker, sell_side, sell_price, half_qty)
+                            and ticker not in self._free_rolled):
+                        full_qty = abs(pos_qty)
+                        log_event("TRADE", f"Free roll: {current_value}c >= {config.FREE_ROLL_PRICE}c — selling entire position ({full_qty}x)")
+                        order = await self.close_position(ticker, sell_side, sell_price, full_qty)
                         if order:
                             self._free_rolled.add(ticker)
-                            self.status["last_action"] = f"Free roll: sold {half_qty}x {sell_side.upper()} @ {sell_price}c"
+                            self.status["last_action"] = f"Free roll: sold {full_qty}x {sell_side.upper()} @ {sell_price}c"
                             try:
                                 _mid = f"[PAPER] {ticker}" if self.paper_mode else ticker
                                 _entry = get_entry_snapshot(_mid)
                                 _entry_ts = datetime.fromisoformat(_entry["ts"]).timestamp() if _entry else None
-                                _pnl = round((sell_price - avg_cost) * half_qty, 1) if avg_cost else 0
+                                _pnl = round((sell_price - avg_cost) * full_qty, 1) if avg_cost else 0
                                 record_snapshot({
                                     "ts": datetime.now(timezone.utc).isoformat(),
                                     "trade_id": order.get("order_id", f"snap-{int(time.time()*1000)}"),
                                     "market_id": _mid, "action": "SELL", "side": sell_side,
-                                    "price_cents": sell_price, "quantity": half_qty,
+                                    "price_cents": sell_price, "quantity": full_qty,
                                     "decision": "SELL", "confidence": 0, "trigger_type": "free_roll",
-                                    "position_qty": abs(pos_qty),
+                                    "position_qty": full_qty,
                                     "pnl_cents": _pnl,
                                     "hold_duration_s": round(time.time() - _entry_ts, 1) if _entry_ts else None,
                                     "entry_price_cents": _entry["price_cents"] if _entry else None,
