@@ -66,9 +66,20 @@ export default function BotStatus({ status, tradeData }) {
         )}
       </div>
 
-      {/* Reasoning */}
+      {/* Reasoning - formatted as 2-column bullets */}
       {reasoning && (
-        <p className="text-xs text-gray-500 leading-relaxed mb-2">{reasoning}</p>
+        <ul className="text-xs text-gray-500 leading-relaxed mb-2 list-none grid grid-cols-2 gap-x-3 gap-y-0.5">
+          {reasoning.split(';').map((part, i) => {
+            const trimmed = part.trim()
+            if (!trimmed) return null
+            return (
+              <li key={i} className="flex items-start gap-1">
+                <span className="text-gray-600">•</span>
+                <span className="truncate" title={trimmed}>{trimmed}</span>
+              </li>
+            )
+          })}
+        </ul>
       )}
 
       {/* Alpha override */}

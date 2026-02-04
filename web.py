@@ -290,7 +290,7 @@ async def kalshi_fills(since: str = ""):
 
 
 @app.post("/api/reconcile")
-async def reconcile_trades(since_utc: str = "2026-01-01T00:00:00Z"):
+async def reconcile_trades(since_utc: str = "2026-02-01T00:00:00Z"):
     """Reconcile trade log with actual Kalshi fills.
 
     Fetches all fills from Kalshi, queries market results for expired markets,
@@ -330,6 +330,14 @@ async def reconcile_trades(since_utc: str = "2026-01-01T00:00:00Z"):
         if f["ticker"].startswith("KXBTC15M-")
         and datetime.fromisoformat(f["created_time"].replace("Z", "+00:00")) >= cutoff
     ]
+
+    # Debug info
+    _debug = {
+        "total_fills_fetched": len(all_fills),
+        "fills_after_filter": len(recent),
+        "oldest_fill": all_fills[-1]["created_time"] if all_fills else None,
+        "newest_fill": all_fills[0]["created_time"] if all_fills else None,
+    }
 
     # 2. Group fills by market
     markets: dict[str, list] = {}
@@ -397,7 +405,7 @@ async def reconcile_trades(since_utc: str = "2026-01-01T00:00:00Z"):
 
         total_revenue_cents = total_sell_revenue_cents + settle_cents
         # P&L excludes fees (fees tracked separately)
-        pnl_cents = total_revenue_cents - total_cost_cents
+        pnl_cents = total_revenue_cents - total_cost_cents - total_fees_cents
 
         # Determine primary side and average entry
         yes_bought = sum(f["count"] for f in fills if f["action"] == "buy" and f["side"] == "yes")
@@ -429,8 +437,9 @@ async def reconcile_trades(since_utc: str = "2026-01-01T00:00:00Z"):
 
     # 4. Rebuild trades table for live mode
     with get_db() as conn:
-        # Clear all live trades
+        # Clear all live trades and P&L data to rebuild from scratch
         conn.execute("DELETE FROM trades WHERE market_id NOT LIKE '[PAPER]%'")
+        conn.execute("DELETE FROM live_market_pnl")
 
         for mkt in results:
             ticker = mkt["ticker"]
@@ -508,6 +517,7 @@ async def reconcile_trades(since_utc: str = "2026-01-01T00:00:00Z"):
 
     # Summary
     total_pnl = sum(m["pnl_cents"] for m in results if m["result"]) / 100.0
+    total_fees = sum(m["fees_cents"] for m in results) / 100.0
     settled_count = sum(1 for m in results if m["result"])
     open_count = sum(1 for m in results if not m["result"])
 
@@ -517,6 +527,8 @@ async def reconcile_trades(since_utc: str = "2026-01-01T00:00:00Z"):
         "settled": settled_count,
         "open": open_count,
         "total_pnl": round(total_pnl, 2),
+        "total_fees": round(total_fees, 2),
+        "debug": _debug,
         "markets": results,
     }
 
@@ -571,13 +583,41 @@ async def switch_env(req: EnvRequest):
     return {"ok": True, "env": req.env}
 
 
+class ChatMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
 class ChatRequest(BaseModel):
     message: str
+    history: list[ChatMessage] = []
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    reply = await bot.agent.chat(req.message, bot.status)
+    # Gather live context for the AI
+    trades_data = get_trades_with_pnl(mode="live")
+    trades_summary = trades_data.get("summary", {})
+    config_data = {k: {**TUNABLE_FIELDS[k], "value": get_tunables()[k]} for k in TUNABLE_FIELDS}
+
+    # Convert history to format expected by agent
+    history = [{"role": m.role, "content": m.content} for m in req.history]
+
+    # Config updater function for AI to use
+    def update_config(updates: dict) -> dict:
+        from database import log_event
+        applied = set_tunables(updates)
+        for k, v in applied.items():
+            log_event("AI_CONFIG", f"AI changed {k} → {v}")
+        return applied
+
+    reply = await bot.agent.chat(
+        req.message,
+        bot_status=bot.status,
+        trades_summary=trades_summary,
+        config=config_data,
+        history=history,
+        config_updater=update_config
+    )
     return {"reply": reply}
 
 

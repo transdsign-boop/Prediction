@@ -30,32 +30,34 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen max-w-2xl mx-auto px-4 py-6 md:py-10">
-      <Header status={status} onAction={refreshStatus} />
-      <ContractCard status={status} />
-      <BotStatus status={status} tradeData={tradeData} />
-      <ExchangeMonitor status={status} />
-      <AlphaDashboard status={status} />
-      <TradeLog tradeData={tradeData} mode={tradeMode} />
+    <>
+      <div className="min-h-screen max-w-2xl mx-auto px-4 py-6 md:py-10">
+        <Header status={status} onAction={refreshStatus} />
+        <ContractCard status={status} />
+        <BotStatus status={status} tradeData={tradeData} />
+        <ExchangeMonitor status={status} />
+        <AlphaDashboard status={status} />
+        <TradeLog tradeData={tradeData} mode={tradeMode} />
 
-      <div className="mt-6 space-y-2">
-        <Collapsible title="Trade Analytics" badge={tradeData?.summary?.total_trades ? `${tradeData.summary.total_trades} trades` : null}>
-          <AnalyticsPanel mode={tradeMode} />
-        </Collapsible>
-        <Collapsible title="Chat with Agent">
-          <ChatPanel />
-        </Collapsible>
-        <Collapsible title="Configuration">
-          <ConfigPanel />
-        </Collapsible>
-        <Collapsible title="Event Log" badge={`cycle ${status.cycle_count}`}>
-          <LogPanel logs={logs} />
-        </Collapsible>
+        <div className="mt-6 space-y-2">
+          <Collapsible title="Trade Analytics" badge={tradeData?.summary?.total_trades ? `${tradeData.summary.total_trades} trades` : null}>
+            <AnalyticsPanel mode={tradeMode} />
+          </Collapsible>
+          <Collapsible title="Configuration">
+            <ConfigPanel />
+          </Collapsible>
+          <Collapsible title="Event Log" badge={`cycle ${status.cycle_count}`}>
+            <LogPanel logs={logs} />
+          </Collapsible>
+        </div>
+
+        <footer className="text-center text-xs text-gray-700 mt-8 pb-4">
+          {status.trading_enabled ? 'LIVE TRADING ENABLED' : 'Trading disabled'}
+        </footer>
       </div>
 
-      <footer className="text-center text-xs text-gray-700 mt-8 pb-4">
-        {status.trading_enabled ? 'LIVE TRADING ENABLED' : 'Trading disabled'}
-      </footer>
-    </div>
+      {/* Floating AI Chat */}
+      <ChatPanel />
+    </>
   )
 }

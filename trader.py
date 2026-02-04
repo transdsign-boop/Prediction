@@ -3,6 +3,7 @@ import base64
 import json
 import re
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -80,6 +81,12 @@ class TradingBot:
         self._entry_ts: dict[str, float] = {}        # ticker -> timestamp of entry
         self._entry_edge: dict[str, float] = {}      # ticker -> edge at entry (cents)
         self._edge_exits_count: dict[str, int] = {}  # ticker -> number of edge-exits this contract
+
+        # Confidence tracking for rolling average
+        self._confidence_history: deque[float] = deque(maxlen=30)  # last 30 samples
+        self._confidence_max_history: deque[float] = deque(maxlen=10)  # rolling max values per market
+        self._current_market_max_conf: float = 0.0  # max confidence in current market
+        self._last_tracked_market: str | None = None  # to detect market changes
 
         # Paper trading state (used in demo/paper mode)
         self._paper_balance: float = config.PAPER_STARTING_BALANCE
@@ -1398,6 +1405,20 @@ class TradingBot:
             dashboard["edge_exit_cooldown"] = config.EDGE_EXIT_COOLDOWN_SECS
             dashboard["reentry_edge_premium"] = config.REENTRY_EDGE_PREMIUM
 
+            # Rolling average confidence for dashboard marker
+            if self._confidence_history:
+                dashboard["rolling_avg_confidence"] = sum(self._confidence_history) / len(self._confidence_history)
+                dashboard["confidence_sample_count"] = len(self._confidence_history)
+            else:
+                dashboard["rolling_avg_confidence"] = 0
+                dashboard["confidence_sample_count"] = 0
+
+            # Rolling average of max values (purple triangle marker)
+            if self._confidence_max_history:
+                dashboard["rolling_avg_max_confidence"] = sum(self._confidence_max_history) / len(self._confidence_max_history)
+            else:
+                dashboard["rolling_avg_max_confidence"] = 0
+
             self.status["dashboard"] = dashboard
 
             # Build snapshot context dict for trade recording (used by all trade paths below)
@@ -1770,6 +1791,20 @@ class TradingBot:
 
                 action = decision["decision"]
                 confidence = decision["confidence"]
+
+                # Track confidence history for rolling average
+                self._confidence_history.append(confidence)
+
+                # Track max confidence per market for rolling average of maxes
+                if self._last_tracked_market and self._last_tracked_market != ticker:
+                    # Market changed - save the max from previous market
+                    if self._current_market_max_conf > 0:
+                        self._confidence_max_history.append(self._current_market_max_conf)
+                    self._current_market_max_conf = confidence
+                else:
+                    # Same market - update max if higher
+                    self._current_market_max_conf = max(self._current_market_max_conf, confidence)
+                self._last_tracked_market = ticker
 
                 if action == "HOLD" or confidence < config.RULE_MIN_CONFIDENCE:
                     self.status["last_action"] = f"Rules: {action} ({confidence:.0%})"

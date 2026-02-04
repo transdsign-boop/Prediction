@@ -35,11 +35,11 @@ export async function postEnv(env) {
   return res.json();
 }
 
-export async function postChat(message) {
+export async function postChat(message, history = []) {
   const res = await fetch(`${BASE}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, history }),
   });
   return res.json();
 }

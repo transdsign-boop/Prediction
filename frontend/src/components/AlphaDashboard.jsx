@@ -232,6 +232,13 @@ export default function AlphaDashboard({ status }) {
     HOLD: 'bg-white/[0.06] text-gray-500',
   }
 
+  // Rolling average confidence
+  const rollingAvgConf = db.rolling_avg_confidence || 0
+  const rollingAvgPct = Math.round(rollingAvgConf * 100)
+  // Rolling average of max confidence values (per-market maxes)
+  const rollingAvgMax = db.rolling_avg_max_confidence || 0
+  const rollingAvgMaxPct = Math.round(rollingAvgMax * 100)
+
   const tf = db.time_factor || 0
   const tfPct = Math.round(tf * 100)
   const tfColor = tfPct > 50 ? 'bg-green-500' : tfPct > 20 ? 'bg-amber-500' : 'bg-red-500'
@@ -327,13 +334,32 @@ export default function AlphaDashboard({ status }) {
       <div className="flex items-center gap-2 pb-2 mb-1 border-b border-white/[0.04]">
         <span className="text-[10px] text-gray-500 shrink-0">Confidence</span>
         <div className="flex-1 h-2 bg-white/[0.04] rounded-full overflow-hidden relative">
-          <div className="absolute top-0 bottom-0 w-px bg-gray-500/50 z-10" style={{ left: `${minConfPct}%` }} />
+          {/* Threshold marker (gray) */}
+          <div className="absolute top-0 bottom-0 w-px bg-gray-500/50 z-10" style={{ left: `${minConfPct}%` }} title={`Threshold: ${minConfPct}%`} />
+          {/* Rolling average marker (blue dot) */}
+          {rollingAvgPct > 0 && (
+            <div
+              className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-blue-500 border border-blue-300 z-20"
+              style={{ left: `calc(${rollingAvgPct}% - 4px)` }}
+              title={`Rolling avg: ${rollingAvgPct}%`}
+            />
+          )}
+          {/* Rolling avg of max confidence marker (purple triangle) */}
+          {rollingAvgMaxPct > 0 && rollingAvgMaxPct !== rollingAvgPct && (
+            <div
+              className="absolute -top-0.5 w-0 h-0 border-l-[4px] border-r-[4px] border-b-[6px] border-l-transparent border-r-transparent border-b-purple-500 z-20"
+              style={{ left: `calc(${rollingAvgMaxPct}% - 4px)` }}
+              title={`Avg max: ${rollingAvgMaxPct}%`}
+            />
+          )}
+          {/* Current confidence bar */}
           <div
             className={`h-full rounded-full transition-all duration-500 ${confAbove ? 'bg-green-500' : confPct > minConfPct * 0.7 ? 'bg-amber-500' : 'bg-red-500'}`}
             style={{ width: `${confPct}%` }}
           />
         </div>
         <span className={`text-sm font-mono font-bold shrink-0 ${confAbove ? 'text-green-400' : 'text-gray-500'}`}>{confPct}%</span>
+        {rollingAvgPct > 0 && <span className="text-[9px] text-blue-400 shrink-0" title="Rolling average">avg:{rollingAvgPct}%</span>}
         <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${decisionColors[decision] || decisionColors.HOLD}`}>{decision.replace('_', ' ')}</span>
       </div>
 
