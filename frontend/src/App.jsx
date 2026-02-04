@@ -37,7 +37,7 @@ export default function App() {
         <BotStatus status={status} tradeData={tradeData} />
         <ExchangeMonitor status={status} />
         <AlphaDashboard status={status} />
-        <TradeLog tradeData={tradeData} mode={tradeMode} />
+        <TradeLog tradeData={tradeData} mode={tradeMode} actualPnl={status.day_pnl} />
 
         <div className="mt-6 space-y-2">
           <Collapsible title="Trade Analytics" badge={tradeData?.summary?.total_trades ? `${tradeData.summary.total_trades} trades` : null}>

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { toPacific } from '../utils/time'
 import { postReconcile } from '../api'
 
-export default function TradeLog({ tradeData, mode }) {
+export default function TradeLog({ tradeData, mode, actualPnl }) {
   const [syncing, setSyncing] = useState(false)
 
   const handleReconcile = async () => {
@@ -27,6 +27,8 @@ export default function TradeLog({ tradeData, mode }) {
   }
 
   const { total_trades, wins, losses, pending, net_pnl, win_rate } = summary
+  // Use actual Kalshi P&L for live mode (more accurate than reconstructed net_pnl)
+  const displayPnl = mode === 'live' && actualPnl != null ? actualPnl : net_pnl
 
   // Group trades by market_id, preserving newest-first order
   const groups = []
@@ -76,8 +78,8 @@ export default function TradeLog({ tradeData, mode }) {
             <>
               <span className="text-green-400">{wins}W</span>
               <span className="text-red-400">{losses}L</span>
-              <span className={`font-semibold ${net_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {net_pnl >= 0 ? '+$' : '-$'}{Math.abs(net_pnl).toFixed(2)}
+              <span className={`font-semibold ${displayPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {displayPnl >= 0 ? '+$' : '-$'}{Math.abs(displayPnl).toFixed(2)}
               </span>
               <span className="text-gray-500">{(win_rate * 100).toFixed(0)}%</span>
             </>

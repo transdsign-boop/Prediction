@@ -813,28 +813,29 @@ class TradingBot:
                 action = f.get("action", "").lower()
                 count = f.get("count", 0)
                 # Kalshi returns yes_price/no_price in cents (e.g., 80 for 80c)
-                price_cents = int(f.get("yes_price", 0))
+                yes_price_cents = int(f.get("yes_price", 0))
+                no_price_cents = int(f.get("no_price", 0))
                 fee_str = f.get("fee_cost", "0")
                 fee_dollars = float(fee_str) if fee_str else 0
                 total_fees_cents += int(fee_dollars * 100)
 
                 if action == "buy":
                     if side == "yes":
-                        buy_cost_cents += price_cents * count
+                        buy_cost_cents += yes_price_cents * count
                         remaining_yes += count
                         if primary_side is None:
                             primary_side = "yes"
                     else:
-                        buy_cost_cents += (100 - price_cents) * count
+                        buy_cost_cents += no_price_cents * count
                         remaining_no += count
                         if primary_side is None:
                             primary_side = "no"
                 elif action == "sell":
                     if side == "yes":
-                        sell_revenue_cents += price_cents * count
+                        sell_revenue_cents += yes_price_cents * count
                         remaining_yes -= count
                     else:
-                        sell_revenue_cents += (100 - price_cents) * count
+                        sell_revenue_cents += no_price_cents * count
                         remaining_no -= count
 
             # Fetch market result for settlement calculation
@@ -853,7 +854,7 @@ class TradingBot:
                 settle_cents = remaining_no * 100
 
             total_revenue_cents = sell_revenue_cents + settle_cents
-            pnl_cents = total_revenue_cents - buy_cost_cents
+            pnl_cents = total_revenue_cents - buy_cost_cents - total_fees_cents
             outcome = "win" if pnl_cents > 0 else "loss" if pnl_cents < 0 else "break-even"
 
             # Store actual P&L
