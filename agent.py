@@ -75,15 +75,15 @@ class MarketAgent:
         expected_move = vol_dpm * math.sqrt(max(secs_left, 1) / 60)
         distance_ratio = min(10.0, abs(btc_vs_strike) / max(expected_move, 50))
 
-        # Compute directional time factors
-        if distance_ratio > 2.0:
-            # Outcome is near-certain — boost the winning side
-            winning_boost = 1.0 + (1.0 - raw_time_factor) * 0.5  # up to 1.5x near expiry
-            losing_factor = raw_time_factor * 0.5  # penalize the losing side
+        # Compute directional time factors (aggressive settings)
+        if distance_ratio > 1.5:
+            # Outcome is near-certain — strong boost to winning side
+            winning_boost = 1.0 + (1.0 - raw_time_factor) * 0.75  # up to 1.75x near expiry
+            losing_factor = raw_time_factor * 0.3  # heavily penalize losing side
         elif distance_ratio > 1.0:
-            # Moderate certainty — slight boost to winner
-            winning_boost = 1.0
-            losing_factor = raw_time_factor
+            # Likely outcome — moderate boost to winner
+            winning_boost = 1.0 + (1.0 - raw_time_factor) * 0.4  # up to 1.4x near expiry
+            losing_factor = raw_time_factor * 0.6
         else:
             # Too close to strike — both sides stay conservative
             winning_boost = raw_time_factor
