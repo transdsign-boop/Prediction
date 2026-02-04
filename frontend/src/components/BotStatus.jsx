@@ -1,6 +1,6 @@
 export default function BotStatus({ status, tradeData }) {
   const {
-    running, last_action, decision, confidence, reasoning, alpha_override,
+    running, last_action, decision, reasoning, alpha_override,
     balance, day_pnl, position_pnl, active_position, orderbook,
     total_account_value, start_balance
   } = status
@@ -9,7 +9,6 @@ export default function BotStatus({ status, tradeData }) {
   const tradeSummary = tradeData?.summary || {}
   const totalTradePnl = tradeSummary.net_pnl || 0
   const totalTrades = tradeSummary.total_trades || 0
-  const conf = Math.round((confidence || 0) * 100)
   const action = last_action || 'Idle'
   const pnl = typeof day_pnl === 'number' ? day_pnl : parseFloat(day_pnl) || 0
   const posPnl = typeof position_pnl === 'number' ? position_pnl : parseFloat(position_pnl) || 0
@@ -86,20 +85,6 @@ export default function BotStatus({ status, tradeData }) {
       {alpha_override && (
         <p className="text-sm text-purple-400 mb-3">Alpha: {alpha_override}</p>
       )}
-
-      {/* Confidence bar (always visible) */}
-      <div className="flex items-center gap-3 mb-4">
-        <span className="text-sm text-gray-500 shrink-0 font-semibold">Conf</span>
-        <div className="flex-1 h-2.5 bg-white/[0.04] rounded-full overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all duration-700 ${
-              conf >= 75 ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : conf >= 50 ? 'bg-yellow-500' : 'bg-red-500'
-            }`}
-            style={{ width: `${conf}%` }}
-          />
-        </div>
-        <span className={`text-base font-mono font-bold ${conf >= 60 ? 'text-gray-300' : 'text-gray-500'}`}>{conf}%</span>
-      </div>
 
       {/* Account overview */}
       <div className="pt-3 border-t border-white/[0.06]">
