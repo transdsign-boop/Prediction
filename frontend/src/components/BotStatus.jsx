@@ -48,19 +48,19 @@ export default function BotStatus({ status, tradeData }) {
   }
 
   return (
-    <div className="card p-4 mb-4">
+    <div className="card p-5 mb-5">
       {/* Action line */}
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-3 mb-3">
         {running ? (
-          <div className="w-3.5 h-3.5 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0" />
+          <div className="w-5 h-5 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0" />
         ) : (
-          <div className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor}`} />
+          <div className={`w-3 h-3 rounded-full flex-shrink-0 ${dotColor}`} />
         )}
-        <span className="text-sm font-medium text-gray-200 truncate flex-1">
+        <span className="text-base font-semibold text-gray-200 truncate flex-1">
           {running ? action : 'Bot stopped'}
         </span>
         {decision && decision !== '—' && (
-          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${badgeBg}`}>
+          <span className={`text-sm font-bold px-2.5 py-1 rounded-full ${badgeBg}`}>
             {decision}
           </span>
         )}
@@ -68,12 +68,12 @@ export default function BotStatus({ status, tradeData }) {
 
       {/* Reasoning - formatted as 2-column bullets */}
       {reasoning && (
-        <ul className="text-xs text-gray-500 leading-relaxed mb-2 list-none grid grid-cols-2 gap-x-3 gap-y-0.5">
+        <ul className="text-sm text-gray-500 leading-relaxed mb-3 list-none grid grid-cols-2 gap-x-4 gap-y-1">
           {reasoning.split(';').map((part, i) => {
             const trimmed = part.trim()
             if (!trimmed) return null
             return (
-              <li key={i} className="flex items-start gap-1">
+              <li key={i} className="flex items-start gap-2">
                 <span className="text-gray-600">•</span>
                 <span className="truncate" title={trimmed}>{trimmed}</span>
               </li>
@@ -84,57 +84,57 @@ export default function BotStatus({ status, tradeData }) {
 
       {/* Alpha override */}
       {alpha_override && (
-        <p className="text-[10px] text-purple-400 mb-2">Alpha: {alpha_override}</p>
+        <p className="text-sm text-purple-400 mb-3">Alpha: {alpha_override}</p>
       )}
 
       {/* Confidence bar (always visible) */}
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-[9px] text-gray-600 shrink-0">Conf</span>
-        <div className="flex-1 h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+      <div className="flex items-center gap-3 mb-4">
+        <span className="text-sm text-gray-500 shrink-0 font-semibold">Conf</span>
+        <div className="flex-1 h-2.5 bg-white/[0.04] rounded-full overflow-hidden">
           <div
             className={`h-full rounded-full transition-all duration-700 ${
-              conf >= 75 ? 'bg-green-500' : conf >= 50 ? 'bg-yellow-500' : 'bg-red-500'
+              conf >= 75 ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : conf >= 50 ? 'bg-yellow-500' : 'bg-red-500'
             }`}
             style={{ width: `${conf}%` }}
           />
         </div>
-        <span className={`text-[10px] font-mono ${conf >= 60 ? 'text-gray-400' : 'text-gray-600'}`}>{conf}%</span>
+        <span className={`text-base font-mono font-bold ${conf >= 60 ? 'text-gray-300' : 'text-gray-500'}`}>{conf}%</span>
       </div>
 
       {/* Account overview */}
-      <div className="pt-2 border-t border-white/[0.04]">
+      <div className="pt-3 border-t border-white/[0.06]">
         {/* Row 1: Total account + Trade Log P&L */}
         <div className="flex items-baseline justify-between">
-          <div className="flex items-baseline gap-1.5">
-            <span className="text-2xl font-bold font-mono text-gray-100">
+          <div className="flex items-baseline gap-2">
+            <span className="text-3xl font-bold font-mono text-gray-100">
               ${totalAccount.toFixed(2)}
             </span>
-            <span className="text-[10px] text-gray-600">total</span>
+            <span className="text-sm text-gray-500">total</span>
           </div>
-          <div className="flex items-baseline gap-3">
+          <div className="flex items-baseline gap-4">
             {/* Total P&L from trade log (actual Kalshi data) */}
-            <div className="flex items-baseline gap-1">
-              <span className={`text-lg font-bold font-mono ${totalTradePnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            <div className="flex items-baseline gap-2">
+              <span className={`text-xl font-bold font-mono ${totalTradePnl >= 0 ? 'text-green-400 glow-green' : 'text-red-400 glow-red'}`}>
                 {totalTradePnl >= 0 ? '+$' : '-$'}{Math.abs(totalTradePnl).toFixed(2)}
               </span>
-              <span className="text-[9px] text-gray-600">{totalTrades}t</span>
+              <span className="text-sm text-gray-500">{totalTrades}t</span>
             </div>
             {/* Session P&L */}
-            <span className={`text-sm font-mono ${pnl >= 0 ? 'text-green-400/60' : 'text-red-400/60'}`}>
+            <span className={`text-base font-mono ${pnl >= 0 ? 'text-green-400/60' : 'text-red-400/60'}`}>
               {pnl >= 0 ? '+$' : '-$'}{Math.abs(pnl).toFixed(2)}
             </span>
           </div>
         </div>
 
         {/* Row 2: Cash + position breakdown */}
-        <div className="flex items-center gap-3 mt-1 text-[11px] font-mono text-gray-500">
+        <div className="flex items-center gap-4 mt-2 text-sm font-mono text-gray-500">
           <span>${bal.toFixed(2)} cash</span>
           {posQty > 0 && (
             <>
               <span className={posPnl >= 0 ? 'text-green-400/70' : 'text-red-400/70'}>
                 ${posMarketValue.toFixed(2)} position
               </span>
-              <span className="text-gray-600">
+              <span className="text-gray-500">
                 {posQty}x {posSide} @ {costPerContract.toFixed(0)}c → {valuePerContract}c
               </span>
             </>

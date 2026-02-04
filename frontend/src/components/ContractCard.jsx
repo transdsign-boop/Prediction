@@ -80,63 +80,63 @@ export default function ContractCard({ status }) {
   const ticker = (market || '').replace('KXBTC15M-', '')
 
   return (
-    <div className="card p-4 mb-4">
+    <div className="card p-5 mb-5">
       {/* Row 1: Timer + ticker + bid/ask */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-3">
-          <span className={`text-2xl font-bold font-mono tracking-wider ${timerColor}`}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-4">
+          <span className={`text-4xl font-bold font-mono tracking-widest ${timerColor} ${urgent ? 'glow-red' : ''}`}>
             {timeStr}
           </span>
-          <span className="text-[10px] text-gray-600">{ticker}</span>
+          <span className="text-sm text-gray-500 font-mono">{ticker}</span>
         </div>
-        <div className="flex items-baseline gap-1.5">
-          <span className="text-lg font-bold font-mono text-green-400">{bestBid ?? '--'}</span>
-          <span className="text-gray-700">/</span>
-          <span className="text-lg font-bold font-mono text-red-400">{bestAsk ?? '--'}</span>
-          <span className="text-[10px] text-gray-600 ml-0.5">{spread}c</span>
+        <div className="flex items-baseline gap-2">
+          <span className="text-2xl font-bold font-mono text-green-400 glow-green">{bestBid ?? '--'}</span>
+          <span className="text-gray-600 text-xl">/</span>
+          <span className="text-2xl font-bold font-mono text-red-400 glow-red">{bestAsk ?? '--'}</span>
+          <span className="text-sm text-gray-500 ml-1">{spread}c</span>
         </div>
       </div>
 
       {/* YES/NO probability bar */}
       {yesPct != null && (
-        <div className="flex items-center gap-0 h-5 rounded overflow-hidden mb-2">
-          <div className="h-full bg-green-500/20 flex items-center justify-start px-2 transition-all duration-500" style={{ width: `${yesPct}%` }}>
-            <span className="text-[10px] font-mono font-semibold text-green-400">YES {yesPct}%</span>
+        <div className="flex items-center gap-0 h-8 rounded-lg overflow-hidden mb-3">
+          <div className="h-full bg-green-500/20 flex items-center justify-start px-3 transition-all duration-500" style={{ width: `${yesPct}%` }}>
+            <span className="text-sm font-mono font-bold text-green-400">YES {yesPct}%</span>
           </div>
-          <div className="h-full bg-red-500/20 flex items-center justify-end px-2 transition-all duration-500" style={{ width: `${noPct}%` }}>
-            <span className="text-[10px] font-mono font-semibold text-red-400">{noPct}% NO</span>
+          <div className="h-full bg-red-500/20 flex items-center justify-end px-3 transition-all duration-500" style={{ width: `${noPct}%` }}>
+            <span className="text-sm font-mono font-bold text-red-400">{noPct}% NO</span>
           </div>
         </div>
       )}
 
       {/* Progress bar */}
-      <div className="w-full bg-white/[0.04] rounded-full h-1 mb-2">
+      <div className="w-full bg-white/[0.04] rounded-full h-2 mb-3">
         <div
-          className={`h-full rounded-full transition-all duration-1000 ${barColor}`}
+          className={`h-full rounded-full transition-all duration-1000 ${barColor} ${urgent ? 'shadow-[0_0_10px_rgba(239,68,68,0.5)]' : ''}`}
           style={{ width: `${progressPct}%` }}
         />
       </div>
 
       {/* Price vs Strike bar */}
       {hasStrike && (
-        <div className="relative h-5 rounded overflow-hidden bg-gradient-to-r from-red-500/10 via-transparent to-green-500/10">
-          <div className="absolute inset-y-0 left-1/2 w-px bg-white/15" />
+        <div className="relative h-8 rounded-lg overflow-hidden bg-gradient-to-r from-red-500/10 via-transparent to-green-500/10">
+          <div className="absolute inset-y-0 left-1/2 w-px bg-white/20" />
           {hasPrice && (
             <div
               className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-20 transition-all duration-700"
               style={{ left: `${pricePosition}%` }}
             >
-              <div className={`w-2.5 h-2.5 rounded-full border-2 ${
+              <div className={`w-4 h-4 rounded-full border-2 ${
                 aboveStrike
-                  ? 'bg-green-500 border-green-400 shadow-[0_0_6px_rgba(34,197,94,0.5)]'
-                  : 'bg-red-500 border-red-400 shadow-[0_0_6px_rgba(239,68,68,0.5)]'
+                  ? 'bg-green-500 border-green-400 shadow-[0_0_12px_rgba(34,197,94,0.6)]'
+                  : 'bg-red-500 border-red-400 shadow-[0_0_12px_rgba(239,68,68,0.6)]'
               }`} />
             </div>
           )}
-          <div className="absolute inset-0 flex items-center justify-between px-2">
-            <span className="text-[9px] font-mono text-gray-600">Strike {fmtPrice(strike_price)}</span>
+          <div className="absolute inset-0 flex items-center justify-between px-3">
+            <span className="text-sm font-mono text-gray-500">Strike {fmtPrice(strike_price)}</span>
             {hasPrice && (
-              <span className={`text-[9px] font-mono font-semibold ${aboveStrike ? 'text-green-400' : 'text-red-400'}`}>
+              <span className={`text-sm font-mono font-bold ${aboveStrike ? 'text-green-400' : 'text-red-400'}`}>
                 {diff >= 0 ? '+' : ''}{diff.toFixed(0)} {aboveStrike ? 'YES' : 'NO'}
               </span>
             )}

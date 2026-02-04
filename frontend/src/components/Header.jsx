@@ -38,29 +38,29 @@ export default function Header({ status, onAction }) {
   }
 
   return (
-    <header className="flex items-center justify-between mb-6">
-      <div className="flex items-center gap-3">
+    <header className="flex items-center justify-between mb-8">
+      <div className="flex items-center gap-4">
         <div
-          className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${running ? 'bg-green-500 pulse-live' : 'bg-gray-600'}`}
+          className={`w-4 h-4 rounded-full flex-shrink-0 ${running ? 'bg-green-500 pulse-live shadow-[0_0_12px_rgba(74,222,128,0.6)]' : 'bg-gray-600'}`}
         />
         <div>
-          <h1 className="text-lg font-semibold tracking-tight leading-tight">Up/Down 15</h1>
-          <p className="text-[11px] text-gray-500">
+          <h1 className="text-2xl font-bold tracking-wider leading-tight font-display">UP/DOWN 15</h1>
+          <p className="text-sm text-gray-400 tracking-wide">
             {env === 'live' ? (
-              <span className="text-red-400 font-medium">LIVE</span>
+              <span className="text-red-400 font-semibold glow-red">LIVE</span>
             ) : (
-              <span className="text-amber-400 font-medium">PAPER</span>
+              <span className="text-amber-400 font-semibold">PAPER</span>
             )}
             {' '}&middot; {running ? 'Running' : 'Stopped'}
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         {paper_mode && (
           <button
             onClick={handlePaperReset}
             disabled={loading}
-            className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-amber-400/70 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 transition disabled:opacity-50"
+            className="px-4 py-2 rounded-lg text-sm font-semibold text-amber-400/70 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 transition disabled:opacity-50"
           >
             Reset
           </button>
@@ -68,7 +68,7 @@ export default function Header({ status, onAction }) {
         <button
           onClick={() => handleEnvSwitch(env === 'live' ? 'demo' : 'live')}
           disabled={loading}
-          className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-gray-400 hover:text-gray-200 bg-white/[0.04] hover:bg-white/[0.08] transition disabled:opacity-50"
+          className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-400 hover:text-gray-200 bg-white/[0.04] hover:bg-white/[0.08] transition disabled:opacity-50"
         >
           {env === 'live' ? 'Paper' : 'Live'}
         </button>
@@ -76,7 +76,7 @@ export default function Header({ status, onAction }) {
           <button
             onClick={() => handleControl('stop')}
             disabled={loading}
-            className="px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 text-xs font-semibold hover:bg-red-500/30 transition disabled:opacity-50"
+            className="px-5 py-2 rounded-lg bg-red-500/20 text-red-400 text-sm font-bold hover:bg-red-500/30 transition disabled:opacity-50"
           >
             {loading ? 'Stopping...' : 'Stop'}
           </button>
@@ -84,7 +84,7 @@ export default function Header({ status, onAction }) {
           <button
             onClick={() => handleControl('start')}
             disabled={loading}
-            className="px-3 py-1.5 rounded-lg bg-green-500/20 text-green-400 text-xs font-semibold hover:bg-green-500/30 transition disabled:opacity-50"
+            className="px-5 py-2 rounded-lg bg-green-500/20 text-green-400 text-sm font-bold hover:bg-green-500/30 transition disabled:opacity-50"
           >
             {loading ? 'Starting...' : 'Start'}
           </button>

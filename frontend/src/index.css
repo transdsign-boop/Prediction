@@ -1,16 +1,53 @@
 @import "tailwindcss";
 
+:root {
+  --font-display: 'Orbitron', sans-serif;
+  --font-body: 'Rajdhani', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+html {
+  font-size: 18px; /* Base size increased from 16px */
+}
+
 body {
   background: #0a0b10;
   color: #e2e8f0;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: var(--font-body);
+  font-weight: 500;
   -webkit-font-smoothing: antialiased;
+  letter-spacing: 0.02em;
+}
+
+/* Futuristic heading style */
+h1, h2, h3, .font-display {
+  font-family: var(--font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* Monospace for numbers and data */
+.font-mono {
+  font-family: var(--font-mono) !important;
+  font-weight: 500;
 }
 
 .card {
   background: #13151e;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
+  box-shadow: 0 0 30px rgba(0, 200, 255, 0.03);
+}
+
+/* Glow effect for important elements */
+.glow-green {
+  text-shadow: 0 0 10px rgba(74, 222, 128, 0.5);
+}
+.glow-red {
+  text-shadow: 0 0 10px rgba(248, 113, 113, 0.5);
+}
+.glow-blue {
+  text-shadow: 0 0 10px rgba(96, 165, 250, 0.5);
 }
 
 .pulse-live {
@@ -32,26 +69,40 @@ body {
   overflow-y: auto;
   transition: max-height 0.5s ease-in;
 }
-.collapse-body::-webkit-scrollbar { width: 4px; }
-.collapse-body::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 2px; }
+.collapse-body::-webkit-scrollbar { width: 6px; }
+.collapse-body::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 3px; }
 .collapse-body::-webkit-scrollbar-track { background: transparent; }
 
 /* Log panel */
 .log-box {
-  max-height: 300px;
+  max-height: 350px;
   overflow-y: auto;
-  font-family: 'Fira Code', 'JetBrains Mono', 'Courier New', monospace;
-  font-size: 0.75rem;
-  line-height: 1.6;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.7;
 }
-.log-box::-webkit-scrollbar { width: 4px; }
-.log-box::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 2px; }
+.log-box::-webkit-scrollbar { width: 6px; }
+.log-box::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 3px; }
 .log-box::-webkit-scrollbar-track { background: transparent; }
 
 /* Chat messages */
 .chat-messages {
-  max-height: 200px;
+  max-height: 250px;
   overflow-y: auto;
 }
-.chat-messages::-webkit-scrollbar { width: 4px; }
-.chat-messages::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 2px; }
+.chat-messages::-webkit-scrollbar { width: 6px; }
+.chat-messages::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 3px; }
+
+/* Larger text utility classes */
+.text-lg-display {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  letter-spacing: 0.08em;
+}
+
+/* Override tiny text sizes to be more readable */
+.text-\[9px\] { font-size: 0.7rem !important; }
+.text-\[10px\] { font-size: 0.75rem !important; }
+.text-\[11px\] { font-size: 0.8rem !important; }
+.text-xs { font-size: 0.85rem !important; }
+.text-sm { font-size: 0.95rem !important; }
