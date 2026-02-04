@@ -562,6 +562,63 @@ def backfill_buy_trades_from_snapshots() -> list[str]:
     return backfilled
 
 
+def sync_market_trades_from_snapshots(market_id: str) -> bool:
+    """Ensure trades table has BUY and exit records for a market from snapshots.
+
+    Called after each settlement to keep trade log in sync.
+    Returns True if any records were added.
+    """
+    added = False
+    with get_db() as conn:
+        # Sync BUY records
+        has_buy = conn.execute(
+            "SELECT 1 FROM trades WHERE market_id = ? AND action = 'BUY' LIMIT 1",
+            (market_id,),
+        ).fetchone()
+        if not has_buy:
+            buy_snap = conn.execute(
+                "SELECT ts, market_id, side, price_cents, quantity FROM trade_snapshots "
+                "WHERE market_id = ? AND action = 'BUY' ORDER BY id DESC LIMIT 1",
+                (market_id,),
+            ).fetchone()
+            if buy_snap:
+                s = dict(buy_snap)
+                conn.execute(
+                    "INSERT INTO trades (ts, market_id, side, action, price, quantity, order_id) "
+                    "VALUES (?, ?, ?, 'BUY', ?, ?, ?)",
+                    (s["ts"], s["market_id"], s["side"],
+                     s["price_cents"] / 100.0, s["quantity"],
+                     f"sync-buy-{market_id}"),
+                )
+                added = True
+
+        # Sync exit records (SETTLE, SELL, SL, TP, EDGE)
+        has_exit = conn.execute(
+            "SELECT 1 FROM trades WHERE market_id = ? "
+            "AND action IN ('SELL', 'SL', 'TP', 'SETTLE', 'SETTLED', 'EDGE') LIMIT 1",
+            (market_id,),
+        ).fetchone()
+        if not has_exit:
+            exit_snap = conn.execute(
+                "SELECT ts, market_id, side, action, price_cents, quantity FROM trade_snapshots "
+                "WHERE market_id = ? AND action IN ('SELL', 'SL', 'TP', 'SETTLE', 'SETTLED', 'EDGE') "
+                "ORDER BY id DESC LIMIT 1",
+                (market_id,),
+            ).fetchone()
+            if exit_snap:
+                s = dict(exit_snap)
+                action = s["action"] if s["action"] != "SETTLE" else "SETTLED"
+                conn.execute(
+                    "INSERT INTO trades (ts, market_id, side, action, price, quantity, order_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (s["ts"], s["market_id"], s["side"], action,
+                     s["price_cents"] / 100.0, s["quantity"],
+                     f"sync-exit-{market_id}"),
+                )
+                added = True
+    return added
+
+
 def get_unsettled_entry(market_id: str) -> dict | None:
     """Return the BUY entry for a market only if no exit exists.
 

@@ -87,7 +87,9 @@ function TradeGroup({ group }) {
   const revenue = settled?.revenue
   const fees = settled?.fees
   const isOpen = !settled
-  const ts = settled?.ts || entries[0]?.ts
+  // Use most recent BUY time (when we actually traded), not settle time
+  const lastBuy = buys[0]
+  const ts = lastBuy?.ts || entries[0]?.ts
 
   // Chronological order for expanded view
   const chronological = [...entries].reverse()

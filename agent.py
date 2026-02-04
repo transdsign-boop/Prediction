@@ -1,4 +1,5 @@
 import json
+import math
 import config
 from database import log_event, record_decision
 
@@ -62,9 +63,39 @@ class MarketAgent:
         dir_1m = velocity["direction_1m"]
         change_1m = velocity["price_change_1m"]
 
-        # 4. Time decay factor: 1.0 at contract open, 0.0 at expiry
+        # 4. Time decay factor — directional boost for winning side near expiry
+        # When BTC is far from strike and time is running out, the winning side
+        # should get MORE confident (time decay working in their favor), not less.
         max_contract_secs = 900.0
-        time_factor = min(1.0, max(0.0, secs_left / max_contract_secs))
+        raw_time_factor = min(1.0, max(0.0, secs_left / max_contract_secs))
+
+        # How many "expected moves" is BTC from strike?
+        # Use reasonable floor for vol to avoid division issues when data is sparse
+        vol_dpm = vol["vol_dollar_per_min"] if vol["vol_dollar_per_min"] >= 50 else 200
+        expected_move = vol_dpm * math.sqrt(max(secs_left, 1) / 60)
+        distance_ratio = min(10.0, abs(btc_vs_strike) / max(expected_move, 50))
+
+        # Compute directional time factors
+        if distance_ratio > 2.0:
+            # Outcome is near-certain — boost the winning side
+            winning_boost = 1.0 + (1.0 - raw_time_factor) * 0.5  # up to 1.5x near expiry
+            losing_factor = raw_time_factor * 0.5  # penalize the losing side
+        elif distance_ratio > 1.0:
+            # Moderate certainty — slight boost to winner
+            winning_boost = 1.0
+            losing_factor = raw_time_factor
+        else:
+            # Too close to strike — both sides stay conservative
+            winning_boost = raw_time_factor
+            losing_factor = raw_time_factor
+
+        # Assign based on which side is winning
+        if btc_vs_strike > 0:  # BTC above strike — YES is winning
+            yes_time_factor = winning_boost
+            no_time_factor = losing_factor
+        else:  # BTC below strike — NO is winning
+            yes_time_factor = losing_factor
+            no_time_factor = winning_boost
 
         # Build reasoning trace
         reasons = []
@@ -72,7 +103,7 @@ class MarketAgent:
         reasons.append(f"Fair: {fair_yes_cents}c YES ({fair_yes_prob:.0%})")
         reasons.append(f"Vol: {regime} (${vol['vol_dollar_per_min']:.1f}/min)")
         reasons.append(f"Trend: ${change_1m:+.0f}/1m")
-        reasons.append(f"Time: {secs_left:.0f}s left")
+        reasons.append(f"Time: {secs_left:.0f}s left (dist={distance_ratio:.1f}x, Y×{yes_time_factor:.2f}/N×{no_time_factor:.2f})")
 
         # Low-vol sit-out
         if config.RULE_SIT_OUT_LOW_VOL and regime == "low":
@@ -105,7 +136,7 @@ class MarketAgent:
                 yes_score += 0.10
                 if regime == "high" and abs(vel_1m) > config.TREND_FOLLOW_VELOCITY:
                     yes_score += 0.05
-            yes_score *= time_factor
+            yes_score *= yes_time_factor
 
         # Score NO
         no_score = 0.0
@@ -115,15 +146,15 @@ class MarketAgent:
                 no_score += 0.10
                 if regime == "high" and abs(vel_1m) > config.TREND_FOLLOW_VELOCITY:
                     no_score += 0.05
-            no_score *= time_factor
+            no_score *= no_time_factor
 
         # Pick the best side
         decision = "HOLD"
         confidence = 0.0
 
         # Calculate potential confidence for both sides (even if no edge)
-        potential_yes_conf = min(0.95, 0.45 + max(0, yes_edge / 100.0) * time_factor) if yes_edge > 0 else 0.0
-        potential_no_conf = min(0.95, 0.45 + max(0, no_edge / 100.0) * time_factor) if no_edge > 0 else 0.0
+        potential_yes_conf = min(0.95, 0.45 + max(0, yes_edge / 100.0) * yes_time_factor) if yes_edge > 0 else 0.0
+        potential_no_conf = min(0.95, 0.45 + max(0, no_edge / 100.0) * no_time_factor) if no_edge > 0 else 0.0
         best_potential = max(potential_yes_conf, potential_no_conf)
 
         if yes_score > no_score and yes_score > 0:

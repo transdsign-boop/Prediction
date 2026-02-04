@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 import config
 from agent import MarketAgent
-from database import init_db, log_event, record_trade, record_decision, record_snapshot, get_entry_snapshot, get_unsettled_entry, get_setting, set_setting, set_live_market_pnl
+from database import init_db, log_event, record_trade, record_decision, record_snapshot, get_entry_snapshot, get_unsettled_entry, get_setting, set_setting, set_live_market_pnl, sync_market_trades_from_snapshots
 
 
 def _load_private_key():
@@ -796,6 +796,8 @@ class TradingBot:
             fills = await self._get("/portfolio/fills", params={"ticker": ticker, "limit": 100})
             fill_list = fills.get("fills", [])
             if not fill_list:
+                # Still sync trades table even without Kalshi fills
+                sync_market_trades_from_snapshots(ticker)
                 return
 
             # Calculate P&L from fills
@@ -810,10 +812,11 @@ class TradingBot:
                 side = f.get("side", "").lower()
                 action = f.get("action", "").lower()
                 count = f.get("count", 0)
-                price_cents = int(float(f.get("yes_price", 0)) * 100)
+                # Kalshi returns yes_price/no_price in cents (e.g., 80 for 80c)
+                price_cents = int(f.get("yes_price", 0))
                 fee_str = f.get("fee_cost", "0")
                 fee_dollars = float(fee_str) if fee_str else 0
-                total_fees_cents += fee_dollars * 100
+                total_fees_cents += int(fee_dollars * 100)
 
                 if action == "buy":
                     if side == "yes":
@@ -863,6 +866,9 @@ class TradingBot:
                 fees_cents=total_fees_cents,
             )
             log_event("INFO", f"[LIVE] Reconciled {ticker}: cost=${buy_cost_cents/100:.2f}, revenue=${total_revenue_cents/100:.2f}, fees=${total_fees_cents/100:.2f}, P&L=${pnl_cents/100:+.2f}")
+
+            # Sync trades table from snapshots to ensure trade log shows this market
+            sync_market_trades_from_snapshots(ticker)
 
         except Exception as exc:
             log_event("ERROR", f"[LIVE] Auto-reconcile failed for {ticker}: {exc}")
