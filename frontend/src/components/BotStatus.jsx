@@ -1,16 +1,11 @@
-export default function BotStatus({ status, tradeData }) {
+export default function BotStatus({ status }) {
   const {
     running, last_action, decision, reasoning, alpha_override,
-    balance, day_pnl, position_pnl, active_position, orderbook,
-    total_account_value, start_balance
+    balance, position_pnl, active_position, orderbook,
+    total_account_value
   } = status
 
-  // Trade log totals from actual Kalshi data
-  const tradeSummary = tradeData?.summary || {}
-  const totalTradePnl = tradeSummary.net_pnl || 0
-  const totalTrades = tradeSummary.total_trades || 0
   const action = last_action || 'Idle'
-  const pnl = typeof day_pnl === 'number' ? day_pnl : parseFloat(day_pnl) || 0
   const posPnl = typeof position_pnl === 'number' ? position_pnl : parseFloat(position_pnl) || 0
   const ob = orderbook || {}
 
@@ -88,7 +83,7 @@ export default function BotStatus({ status, tradeData }) {
 
       {/* Account overview */}
       <div className="pt-3 border-t border-white/[0.06]">
-        {/* Row 1: Total account + Trade Log P&L */}
+        {/* Row 1: Total account + Position P&L */}
         <div className="flex items-baseline justify-between">
           <div className="flex items-baseline gap-2">
             <span className="text-3xl font-bold font-mono text-gray-100">
@@ -96,33 +91,24 @@ export default function BotStatus({ status, tradeData }) {
             </span>
             <span className="text-sm text-gray-500">total</span>
           </div>
-          <div className="flex items-baseline gap-4">
-            {/* Total P&L from trade log (actual Kalshi data) */}
+          {/* Position P&L (only shown if there's a position) */}
+          {posQty > 0 && (
             <div className="flex items-baseline gap-2">
-              <span className={`text-xl font-bold font-mono ${totalTradePnl >= 0 ? 'text-green-400 glow-green' : 'text-red-400 glow-red'}`}>
-                {totalTradePnl >= 0 ? '+$' : '-$'}{Math.abs(totalTradePnl).toFixed(2)}
+              <span className={`text-xl font-bold font-mono ${posPnl >= 0 ? 'text-green-400 glow-green' : 'text-red-400 glow-red'}`}>
+                {posPnl >= 0 ? '+$' : '-$'}{Math.abs(posPnl).toFixed(2)}
               </span>
-              <span className="text-sm text-gray-500">{totalTrades}t</span>
+              <span className="text-sm text-gray-500">position</span>
             </div>
-            {/* Session P&L */}
-            <span className={`text-base font-mono ${pnl >= 0 ? 'text-green-400/60' : 'text-red-400/60'}`}>
-              {pnl >= 0 ? '+$' : '-$'}{Math.abs(pnl).toFixed(2)}
-            </span>
-          </div>
+          )}
         </div>
 
         {/* Row 2: Cash + position breakdown */}
         <div className="flex items-center gap-4 mt-2 text-sm font-mono text-gray-500">
           <span>${bal.toFixed(2)} cash</span>
           {posQty > 0 && (
-            <>
-              <span className={posPnl >= 0 ? 'text-green-400/70' : 'text-red-400/70'}>
-                ${posMarketValue.toFixed(2)} position
-              </span>
-              <span className="text-gray-500">
-                {posQty}x {posSide} @ {costPerContract.toFixed(0)}c → {valuePerContract}c
-              </span>
-            </>
+            <span className="text-gray-500">
+              {posQty}x {posSide} @ {costPerContract.toFixed(0)}c → {valuePerContract}c
+            </span>
           )}
         </div>
       </div>

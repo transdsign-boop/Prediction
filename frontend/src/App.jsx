@@ -34,7 +34,7 @@ export default function App() {
       <div className="min-h-screen max-w-2xl mx-auto px-4 py-6 md:py-10">
         <Header status={status} onAction={refreshStatus} />
         <ContractCard status={status} />
-        <BotStatus status={status} tradeData={tradeData} />
+        <BotStatus status={status} />
         <ExchangeMonitor status={status} />
         <AlphaDashboard status={status} />
         <TradeLog tradeData={tradeData} mode={tradeMode} actualPnl={status.day_pnl} />
