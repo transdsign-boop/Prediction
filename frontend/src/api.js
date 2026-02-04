@@ -74,8 +74,8 @@ export async function applySuggestion(param, value) {
 }
 
 export async function postReconcile() {
-  // Use a very old date to fetch ALL trades from the account
-  const res = await fetch(`${BASE}/api/reconcile?since_utc=2020-01-01T00:00:00Z`, {
+  // Only fetch trades from Feb 1, 2026 onwards
+  const res = await fetch(`${BASE}/api/reconcile?since_utc=2026-02-01T00:00:00Z`, {
     method: 'POST',
   });
   return res.json();
