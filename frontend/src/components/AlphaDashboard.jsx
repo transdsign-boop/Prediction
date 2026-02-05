@@ -279,24 +279,24 @@ export default function AlphaDashboard({ status }) {
     </span>
   )
 
-  // --- Exit rules ---
+  // --- Exit rules (Scalping: quick profit + edge fade backup) ---
   const hasPosition = guards.same_side?.holding !== 'NONE'
   const exitEntries = [
-    { key: 'stop_loss', label: 'Stop-Loss', e: exits.stop_loss, fmt: e => `${e.value}c loss`,
-      th: e => <span className="text-[10px] text-gray-400 font-mono">{e.threshold}c</span> },
-    { key: 'hit_and_run', label: 'Hit & Run', e: exits.hit_and_run, fmt: e => `${e.value}% gain`,
-      th: e => <Editable configKey="HIT_RUN_PCT" display={e.enabled ? `${e.threshold}%` : 'OFF'} type="float" /> },
-    { key: 'profit_take', label: 'Profit Take', e: exits.profit_take, fmt: e => `${e.value}% gain`,
-      th: e => <Editable configKey="PROFIT_TAKE_PCT" display={`${e.threshold}%`} /> },
-    { key: 'free_roll', label: 'Free Roll', e: exits.free_roll, fmt: e => `${e.value}c (${e.qty}x)`,
-      th: e => <Editable configKey="FREE_ROLL_PRICE" display={`${e.threshold}c`} /> },
-    { key: 'edge_exit', label: 'Edge Exit', e: exits.edge_exit,
-      fmt: e => `${e.remaining_edge}c edge / ${e.threshold}c thr`,
-      th: e => <Editable configKey="EDGE_EXIT_THRESHOLD_CENTS" display={`${db.edge_exit_threshold || 2}c`} />,
+    { key: 'quick_profit', label: 'Quick Profit', e: exits.quick_profit,
+      fmt: e => `${e.profit_per_contract}c / ${e.threshold}c target • ${e.hold_secs}s held`,
+      th: e => <Editable configKey="QUICK_PROFIT_CENTS" display={`${db.quick_profit_cents || 4}c`} />,
       badge: e => (
         <span className="flex items-center gap-1">
-          {e.count > 0 && <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-500/15 text-amber-400">{e.count}x</span>}
-          <Toggle configKey="EDGE_EXIT_ENABLED" enabled={e.enabled} />
+          <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-green-500/15 text-green-400">PRIMARY</span>
+        </span>
+      ),
+    },
+    { key: 'edge_exit', label: 'Edge Fade', e: exits.edge_exit,
+      fmt: e => `${e.remaining_edge}c / ${e.threshold}c fade • ${e.hold_secs}s held`,
+      th: e => <Editable configKey="EDGE_FADE_THRESHOLD" display={`${db.edge_fade_threshold || 1}c`} />,
+      badge: e => (
+        <span className="flex items-center gap-1">
+          <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-500/15 text-amber-400">BACKUP</span>
         </span>
       ),
     },

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { fetchConfig, postConfig } from '../api'
 
-// Settings NOT on the Alpha Dashboard (dashboard has inline editing for guards, exits, alpha thresholds)
+// Scalping Strategy: Simplified config for edge-based trading
 const SETTINGS = {
   TRADING_ENABLED: {
     label: 'Trading Enabled',
@@ -22,73 +22,55 @@ const SETTINGS = {
     unit: '',
     desc: 'Fraction of orderbook depth available per fill. 0.1 = pessimistic, 0.5 = realistic, 1.0 = optimistic.',
   },
-  ORDER_SIZE_PCT: {
-    label: 'Order Size',
+  QUICK_PROFIT_CENTS: {
+    label: 'Quick Profit Target',
+    unit: 'c',
+    desc: 'Take profit when position gains this much per contract. Primary exit rule.',
+  },
+  EDGE_FADE_THRESHOLD: {
+    label: 'Edge Fade Backup',
+    unit: 'c',
+    desc: 'Backup exit when edge drops to this level. Safety net for wrong positions.',
+  },
+  MIN_HOLD_SECONDS: {
+    label: 'Min Hold Time',
+    unit: 's',
+    desc: 'Minimum time to hold a position before exiting. Prevents thrashing on rapid price swings.',
+  },
+  REENTRY_COOLDOWN_SECONDS: {
+    label: 'Re-Entry Cooldown',
+    unit: 's',
+    desc: 'Wait time after exit before allowing re-entry. Prevents immediate re-entry on same tick.',
+  },
+  BASE_POSITION_SIZE_PCT: {
+    label: 'Base Position Size',
     unit: '%',
-    desc: 'Percentage of your balance to spend on each individual order.',
+    desc: 'Default % of balance per trade. Scales up for strong edge.',
+  },
+  MAX_POSITION_SIZE_PCT: {
+    label: 'Max Position Size',
+    unit: '%',
+    desc: 'Maximum % of balance in a single trade. Caps position sizing.',
+  },
+  STRONG_EDGE_THRESHOLD: {
+    label: 'Strong Edge',
+    unit: 'c',
+    desc: 'Edge threshold to scale up position size. 8c+ = max size.',
   },
   MAX_POSITION_PCT: {
-    label: 'Max Position',
+    label: 'Max Position Value',
     unit: '%',
-    desc: 'Maximum percentage of balance allowed in a single contract. Prevents over-concentration.',
+    desc: 'Maximum % of balance in a single contract (fallback if position size exceeds budget).',
   },
   MAX_TOTAL_EXPOSURE_PCT: {
-    label: 'Max Exposure',
+    label: 'Max Total Exposure',
     unit: '%',
-    desc: 'Maximum percentage of balance at risk across all open positions combined.',
-  },
-  MAX_DAILY_LOSS_PCT: {
-    label: 'Max Loss Limit',
-    unit: '%',
-    desc: 'Halt all trading if total realized losses exceed this percentage of your starting balance.',
-  },
-  STOP_LOSS_CENTS: {
-    label: 'Stop Loss',
-    unit: 'c',
-    desc: 'Exit position if down this many cents per contract. Higher = more room before cutting losses.',
-  },
-  PROFIT_TAKE_MIN_SECS: {
-    label: 'PT Min Time Left',
-    unit: 's',
-    desc: 'Only take profit if more than this many seconds remain. Prevents selling right before expiry when settlement may pay more.',
-  },
-  EXTREME_DELTA_THRESHOLD: {
-    label: 'Extreme Momentum',
-    unit: '$',
-    desc: 'Momentum threshold for aggressive execution. Crosses the spread (market order) instead of limit.',
-  },
-  RULE_MIN_CONFIDENCE: {
-    label: 'Min Confidence',
-    unit: '',
-    desc: 'Minimum confidence score (0-1) from the rule engine to execute. Combines edge size, trend, and time remaining.',
+    desc: 'Maximum % of balance at risk across all open positions combined.',
   },
   FAIR_VALUE_K: {
     label: 'Fair Value Steepness',
     unit: '',
-    desc: 'How aggressively fair value reacts to BTC distance from strike. Higher = more decisive when BTC is clearly above/below.',
-  },
-  VOL_HIGH_THRESHOLD: {
-    label: 'High Vol Threshold',
-    unit: '$/min',
-    desc: 'BTC movement above this = high volatility mode. Adds trend-following bonus. BTC median ~$100-150/min.',
-  },
-  VOL_LOW_THRESHOLD: {
-    label: 'Low Vol Threshold',
-    unit: '$/min',
-    desc: 'BTC movement below this = low volatility. Bot sits out (if enabled). BTC quiet periods ~$50-80/min.',
-  },
-  RULE_SIT_OUT_LOW_VOL: {
-    label: 'Sit Out Low Vol',
-    desc: 'Skip trading entirely when volatility is below the low threshold. Disable to trade in flat markets too.',
-  },
-  TREND_FOLLOW_VELOCITY: {
-    label: 'Trend Velocity',
-    unit: '$/s',
-    desc: 'Minimum BTC price movement speed for trend-following bonus in high-vol mode. Lower = easier to trigger.',
-  },
-  EDGE_EXIT_ENABLED: {
-    label: 'Edge Exit',
-    desc: 'Exit positions when remaining edge evaporates. Allows re-entry after cooldown with higher edge requirement.',
+    desc: 'How aggressively fair value reacts to BTC distance from strike. 0.6 = moderate.',
   },
 }
 
@@ -98,12 +80,16 @@ const GROUPS = [
     keys: ['TRADING_ENABLED', 'POLL_INTERVAL_SECONDS', 'PAPER_STARTING_BALANCE', 'PAPER_FILL_FRACTION'],
   },
   {
-    title: 'Sizing & Risk',
-    keys: ['ORDER_SIZE_PCT', 'MAX_POSITION_PCT', 'MAX_TOTAL_EXPOSURE_PCT', 'MAX_DAILY_LOSS_PCT', 'STOP_LOSS_CENTS'],
+    title: 'Scalping Strategy',
+    keys: ['QUICK_PROFIT_CENTS', 'EDGE_FADE_THRESHOLD', 'MIN_HOLD_SECONDS', 'REENTRY_COOLDOWN_SECONDS', 'BASE_POSITION_SIZE_PCT', 'MAX_POSITION_SIZE_PCT', 'STRONG_EDGE_THRESHOLD'],
   },
   {
-    title: 'Strategy',
-    keys: ['EDGE_EXIT_ENABLED', 'EXTREME_DELTA_THRESHOLD', 'PROFIT_TAKE_MIN_SECS', 'RULE_MIN_CONFIDENCE', 'FAIR_VALUE_K', 'VOL_HIGH_THRESHOLD', 'VOL_LOW_THRESHOLD', 'RULE_SIT_OUT_LOW_VOL', 'TREND_FOLLOW_VELOCITY'],
+    title: 'Risk Management',
+    keys: ['MAX_POSITION_PCT', 'MAX_TOTAL_EXPOSURE_PCT'],
+  },
+  {
+    title: 'Advanced',
+    keys: ['FAIR_VALUE_K'],
   },
 ]
 

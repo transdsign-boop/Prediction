@@ -59,30 +59,25 @@ class TradingBot:
 
     PATH_PREFIX = "/trade-api/v2"
 
-    def __init__(self, alpha_monitor=None):
+    def __init__(self, alpha_monitor=None, mode="demo"):
         init_db()
 
-        # Restore persisted environment preference (survives restarts)
-        saved_env = get_setting("env")
-        if saved_env and saved_env in ("demo", "live") and saved_env != config.KALSHI_ENV:
-            config.switch_env(saved_env)
+        # Fix mode at creation time (no runtime switching)
+        self._fixed_mode = mode
 
         self.agent = MarketAgent()
         self.alpha = alpha_monitor
         self.running = False
         self.http: httpx.AsyncClient | None = None
         self.private_key = _load_private_key()
-        self._active_env = config.KALSHI_ENV
+        self._active_env = mode
         self._start_balance: float | None = None  # set on first cycle
         self._start_exposure: float = 0.0        # open position cost at start
-        self._free_rolled: set[str] = set()      # tickers where we already sold half
-        self._took_profit: set[str] = set()      # tickers where we've taken profit (prevent re-entry)
-        self._edge_exit_ts: dict[str, float] = {}   # ticker -> timestamp of last edge-exit
+        self._last_exit_ts: dict[str, float] = {}   # ticker -> timestamp of last exit (for cooldown)
         self._entry_ts: dict[str, float] = {}        # ticker -> timestamp of entry
         self._entry_edge: dict[str, float] = {}      # ticker -> edge at entry (cents)
-        self._edge_exits_count: dict[str, int] = {}  # ticker -> number of edge-exits this contract
 
-        # Confidence tracking for rolling average
+        # Confidence tracking for rolling average (dashboard display)
         self._confidence_history: deque[float] = deque(maxlen=30)  # last 30 samples
         self._confidence_max_history: deque[float] = deque(maxlen=10)  # rolling max values per market
         self._current_market_max_conf: float = 0.0  # max confidence in current market
@@ -106,7 +101,8 @@ class TradingBot:
             "last_action": "Idle",
             "last_decision": None,
             "cycle_count": 0,
-            "env": config.KALSHI_ENV,
+            "env": mode,
+            "paper_mode": mode == "demo",
             "alpha_latency_delta": 0.0,
             "alpha_delta_momentum": 0.0,
             "alpha_delta_baseline": 0.0,
@@ -127,7 +123,7 @@ class TradingBot:
 
     @property
     def paper_mode(self) -> bool:
-        return config.KALSHI_ENV == "demo"
+        return self._fixed_mode == "demo"
 
     def _save_paper_state(self):
         """Persist paper balance and positions to DB so state survives restarts."""
@@ -158,49 +154,45 @@ class TradingBot:
         if saved_ticker:
             self._last_paper_ticker = saved_ticker
 
-    def reset_paper_trading(self):
+    def reset_paper_trading(self, starting_balance: float | None = None):
         """Reset all paper trading state — balance, positions, and trade history."""
-        self._paper_balance = config.PAPER_STARTING_BALANCE
+        if starting_balance is None:
+            starting_balance = config.PAPER_STARTING_BALANCE
+
+        self._paper_balance = starting_balance
         self._paper_positions = {}
         self._last_paper_ticker = None
         self._start_balance = None
         self._start_exposure = 0.0
         self._save_paper_state()
-        log_event("INFO", f"Paper trading reset — balance: ${config.PAPER_STARTING_BALANCE:.2f}")
+        log_event("INFO", f"Paper trading reset — balance: ${starting_balance:.2f}")
 
-    async def switch_environment(self, env: str):
-        """Switch between 'demo' and 'live'. Stops the bot, swaps creds, resets client."""
-        was_running = self.running
-        if was_running:
-            self.stop()
-            # Give the loop a moment to exit
-            await asyncio.sleep(1)
+    def _calculate_position_size_pct(self, edge_cents: float, spread_cents: float, volatility: float = 0) -> float:
+        """Dynamic position sizing based on edge strength and market conditions.
 
-        config.switch_env(env)
-        self.private_key = _load_private_key()
-        self._active_env = env
+        Args:
+            edge_cents: Edge in cents (fair_value - market_price)
+            spread_cents: Bid-ask spread in cents
+            volatility: Optional volatility measure (not currently used)
 
-        # Force new HTTP client on next request
-        if self.http and not self.http.is_closed:
-            await self.http.aclose()
-        self.http = None
+        Returns:
+            Percentage of balance to use for this trade (BASE_POSITION_SIZE_PCT to MAX_POSITION_SIZE_PCT)
+        """
+        size_pct = config.BASE_POSITION_SIZE_PCT  # Start with base size (default: 5%)
 
-        self.status["env"] = env
-        self.status["balance"] = 0.0
-        self.status["day_pnl"] = 0.0
-        self.status["active_position"] = None
-        self.status["current_market"] = None
-        self.status["cycle_count"] = 0
-        self._start_balance = None  # reset so P&L recalculates for new env
-        self._start_exposure = 0.0
-        set_setting("env", env)
+        # Scale up for strong edge
+        if edge_cents >= config.STRONG_EDGE_THRESHOLD:  # 8+ cents
+            size_pct = config.MAX_POSITION_SIZE_PCT  # Use max size for very strong edge
+        elif edge_cents >= 6:
+            # Interpolate between base and max
+            size_pct = config.BASE_POSITION_SIZE_PCT + (config.MAX_POSITION_SIZE_PCT - config.BASE_POSITION_SIZE_PCT) * 0.5
 
-        # Restore or initialize paper trading state
-        if env == "demo":
-            self._restore_paper_state()
-            log_event("INFO", f"Switched to PAPER mode (balance: ${self._paper_balance:.2f})")
-        else:
-            log_event("INFO", "Switched to LIVE environment")
+        # Reduce for wide spreads (poor liquidity)
+        if spread_cents > 5:
+            size_pct = max(config.BASE_POSITION_SIZE_PCT * 0.5, size_pct * 0.7)
+
+        # Cap at maximum
+        return min(size_pct, config.MAX_POSITION_SIZE_PCT)
 
     # ------------------------------------------------------------------
     # HTTP helpers (Kalshi REST API via httpx + RSA-PSS auth)
@@ -1115,12 +1107,9 @@ class TradingBot:
                 asyncio.create_task(self._settle_paper_positions(ticker))
                 log_event("INFO", f"Contract transition: {old_ticker} → {ticker} (settlement running in background)")
                 # Clear tracking sets for new contract immediately
-                self._free_rolled.clear()
-                self._took_profit.clear()
-                self._edge_exit_ts.clear()
+                self._last_exit_ts.clear()
                 self._entry_ts.clear()
                 self._entry_edge.clear()
-                self._edge_exits_count.clear()
                 if self.alpha:
                     self.alpha.reset_contract_window()
             if self.paper_mode:
@@ -1134,12 +1123,9 @@ class TradingBot:
                 if self._last_paper_ticker != ticker:
                     old_live_ticker = self._last_paper_ticker
                     self._last_paper_ticker = ticker
-                    self._free_rolled.clear()
-                    self._took_profit.clear()
-                    self._edge_exit_ts.clear()
+                    self._last_exit_ts.clear()
                     self._entry_ts.clear()
                     self._entry_edge.clear()
-                    self._edge_exits_count.clear()
                     if self.alpha:
                         self.alpha.reset_contract_window()
                     # Record settlement for expired live positions (non-blocking)
@@ -1319,13 +1305,9 @@ class TradingBot:
                     "blocked": False,
                     "holding": "YES" if pos_val > 0 else ("NO" if pos_val < 0 else "NONE"),
                 },
-                "tp_reentry": {
-                    "blocked": ticker in self._took_profit if ticker else False,
-                },
-                "edge_reentry": {
-                    "blocked": ticker in self._edge_exit_ts and (time.time() - self._edge_exit_ts.get(ticker, 0)) < config.EDGE_EXIT_COOLDOWN_SECS if ticker else False,
-                    "cooldown_left": max(0, config.EDGE_EXIT_COOLDOWN_SECS - (time.time() - self._edge_exit_ts.get(ticker, 0))) if ticker and ticker in self._edge_exit_ts else 0,
-                    "premium": config.REENTRY_EDGE_PREMIUM,
+                "reentry_cooldown": {
+                    "blocked": ticker in self._last_exit_ts and (time.time() - self._last_exit_ts.get(ticker, 0)) < config.REENTRY_COOLDOWN_SECONDS if ticker else False,
+                    "cooldown_left": max(0, config.REENTRY_COOLDOWN_SECONDS - (time.time() - self._last_exit_ts.get(ticker, 0))) if ticker and ticker in self._last_exit_ts else 0,
                 },
             }
 
@@ -1358,18 +1340,30 @@ class TradingBot:
                     "min_secs": config.PROFIT_TAKE_MIN_SECS,
                 }
                 exits["free_roll"] = {
-                    "triggered": sp >= config.FREE_ROLL_PRICE and eq >= 2 and ticker not in self._free_rolled,
+                    "triggered": False,  # Disabled in scalping mode
                     "value": sp,
                     "threshold": config.FREE_ROLL_PRICE,
                     "qty": eq,
-                    "already_rolled": ticker in self._free_rolled,
+                    "already_rolled": False,
                 }
 
-                # Edge-exit dashboard data
+                # Quick profit dashboard data (primary exit rule)
+                _profit_per_contract = sp - avg_c if avg_c > 0 else 0
+                _hold_elapsed = time.time() - self._entry_ts.get(ticker, time.time())
+                exits["quick_profit"] = {
+                    "triggered": _profit_per_contract >= config.QUICK_PROFIT_CENTS and _hold_elapsed >= config.MIN_HOLD_SECONDS,
+                    "profit_per_contract": round(_profit_per_contract, 1),
+                    "threshold": config.QUICK_PROFIT_CENTS,
+                    "hold_secs": round(_hold_elapsed, 0),
+                    "min_hold": config.MIN_HOLD_SECONDS,
+                    "enabled": True,
+                }
+
+                # Edge-exit dashboard data (backup exit rule)
                 _edge_remaining = 0
                 _edge_threshold = 0
                 _edge_hold = time.time() - self._entry_ts.get(ticker, time.time())
-                if config.EDGE_EXIT_ENABLED and self.alpha and strike and strike > 0:
+                if self.alpha and strike and strike > 0:  # Edge-exit always enabled in scalping mode
                     try:
                         _fv_edge = self.alpha.get_fair_value(strike, secs_left)
                         _fair_yes_edge = _fv_edge.get("fair_yes_cents", 0)
@@ -1378,24 +1372,25 @@ class TradingBot:
                         else:
                             _edge_remaining = best_ask - _fair_yes_edge
                         _tf = min(1.0, max(0.0, secs_left / 900.0))
-                        _edge_threshold = config.EDGE_EXIT_THRESHOLD_CENTS * _tf
+                        _edge_threshold = config.EDGE_FADE_THRESHOLD * _tf
                     except Exception:
                         pass
                 exits["edge_exit"] = {
-                    "triggered": config.EDGE_EXIT_ENABLED and _edge_remaining <= _edge_threshold and _edge_hold >= config.EDGE_EXIT_MIN_HOLD_SECS,
+                    "triggered": _edge_remaining <= _edge_threshold and _edge_hold >= config.MIN_HOLD_SECONDS,
                     "remaining_edge": round(_edge_remaining, 1),
                     "threshold": round(_edge_threshold, 1),
                     "hold_secs": round(_edge_hold, 0),
-                    "min_hold": config.EDGE_EXIT_MIN_HOLD_SECS,
-                    "enabled": config.EDGE_EXIT_ENABLED,
-                    "count": self._edge_exits_count.get(ticker, 0),
+                    "min_hold": config.MIN_HOLD_SECONDS,
+                    "enabled": True,  # Always enabled in scalping mode
+                    "count": 0,  # Not tracking count anymore
                 }
             else:
+                exits["quick_profit"] = {"triggered": False, "profit_per_contract": 0, "threshold": config.QUICK_PROFIT_CENTS, "hold_secs": 0, "min_hold": config.MIN_HOLD_SECONDS, "enabled": True}
+                exits["edge_exit"] = {"triggered": False, "remaining_edge": 0, "threshold": config.EDGE_FADE_THRESHOLD, "hold_secs": 0, "min_hold": config.MIN_HOLD_SECONDS, "enabled": True}
                 exits["stop_loss"] = {"triggered": False, "value": 0, "threshold": config.STOP_LOSS_CENTS}
                 exits["hit_and_run"] = {"triggered": False, "value": 0, "threshold": config.HIT_RUN_PCT, "enabled": config.HIT_RUN_PCT > 0}
                 exits["profit_take"] = {"triggered": False, "value": 0, "threshold": config.PROFIT_TAKE_PCT, "min_secs": config.PROFIT_TAKE_MIN_SECS}
                 exits["free_roll"] = {"triggered": False, "value": 0, "threshold": config.FREE_ROLL_PRICE, "qty": 0, "already_rolled": False}
-                exits["edge_exit"] = {"triggered": False, "remaining_edge": 0, "threshold": 0, "hold_secs": 0, "min_hold": config.EDGE_EXIT_MIN_HOLD_SECS, "enabled": config.EDGE_EXIT_ENABLED, "count": self._edge_exits_count.get(ticker, 0) if ticker else 0}
             dashboard["exits"] = exits
 
             # Config thresholds for frontend display
@@ -1406,10 +1401,13 @@ class TradingBot:
             dashboard["anchor_seconds_threshold"] = config.ANCHOR_SECONDS_THRESHOLD
             dashboard["min_edge_cents"] = config.MIN_EDGE_CENTS
             dashboard["min_confidence"] = config.RULE_MIN_CONFIDENCE
-            dashboard["edge_exit_enabled"] = config.EDGE_EXIT_ENABLED
-            dashboard["edge_exit_threshold"] = config.EDGE_EXIT_THRESHOLD_CENTS
-            dashboard["edge_exit_cooldown"] = config.EDGE_EXIT_COOLDOWN_SECS
-            dashboard["reentry_edge_premium"] = config.REENTRY_EDGE_PREMIUM
+            dashboard["quick_profit_cents"] = config.QUICK_PROFIT_CENTS
+            dashboard["edge_fade_threshold"] = config.EDGE_FADE_THRESHOLD
+            dashboard["min_hold_seconds"] = config.MIN_HOLD_SECONDS
+            dashboard["reentry_cooldown_seconds"] = config.REENTRY_COOLDOWN_SECONDS
+            dashboard["base_position_size_pct"] = config.BASE_POSITION_SIZE_PCT
+            dashboard["max_position_size_pct"] = config.MAX_POSITION_SIZE_PCT
+            dashboard["strong_edge_threshold"] = config.STRONG_EDGE_THRESHOLD
 
             # Rolling average confidence for dashboard marker
             if self._confidence_history:
@@ -1457,205 +1455,102 @@ class TradingBot:
                     "exposure": total_exposure,
                 }
 
-            # 5. Exit logic (stop-loss + profit-taking) — before time guard
-            #    so hold-to-expiry can still fire, but after P&L is computed
+            # 5. SCALPING EXIT LOGIC — Single rule: exit when edge fades
             if my_pos:
                 pos_qty = my_pos.get("position", 0) or 0
                 pos_exposure_cents = my_pos.get("market_exposure", 0) or 0
-                mark_to_market_exit = best_bid * pos_qty if pos_qty > 0 else (100 - best_ask) * abs(pos_qty) if pos_qty < 0 else 0
 
                 if abs(pos_qty) > 0 and config.TRADING_ENABLED:
                     sell_side = "yes" if pos_qty > 0 else "no"
                     sell_price = best_bid if pos_qty > 0 else (100 - best_ask)
                     sell_price = max(1, min(99, sell_price))
-                    current_value = sell_price
 
-                    # Rule: Last-Minute Hold — don't sell in final stretch, ride to settlement
-                    if secs_left < config.HOLD_EXPIRY_SECS:
-                        log_event("GUARD", f"Hold-to-expiry: {secs_left:.0f}s left — riding to settlement")
-                        self.status["last_action"] = f"Holding to expiry ({secs_left:.0f}s left)"
-                        return
-
-                    # Rule: Stop-loss (still active outside hold zone)
-                    if config.STOP_LOSS_CENTS > 0:
-                        loss_per_contract = (pos_exposure_cents - mark_to_market_exit) / abs(pos_qty)
-                        if loss_per_contract >= config.STOP_LOSS_CENTS:
-                            sell_qty = abs(pos_qty)
-                            log_event("GUARD", f"Stop-loss triggered: down {loss_per_contract:.0f}c/contract (limit {config.STOP_LOSS_CENTS}c)")
-                            order = await self.close_position(ticker, sell_side, sell_price, sell_qty, exit_type="SL")
-                            if order:
-                                self.status["last_action"] = f"SL: sold {sell_qty}x {sell_side.upper()} @ {sell_price}c"
-                                try:
-                                    _mid = f"[PAPER] {ticker}" if self.paper_mode else ticker
-                                    _entry = get_entry_snapshot(_mid)
-                                    _entry_ts = datetime.fromisoformat(_entry["ts"]).timestamp() if _entry else None
-                                    record_snapshot({
-                                        "ts": datetime.now(timezone.utc).isoformat(),
-                                        "trade_id": order.get("order_id", f"snap-{int(time.time()*1000)}"),
-                                        "market_id": _mid, "action": "SL", "side": sell_side,
-                                        "price_cents": sell_price, "quantity": sell_qty,
-                                        "decision": "SL", "confidence": 0, "trigger_type": "stop_loss",
-                                        "position_qty": abs(pos_qty),
-                                        "pnl_cents": round(-loss_per_contract * sell_qty, 1),
-                                        "hold_duration_s": round(time.time() - _entry_ts, 1) if _entry_ts else None,
-                                        "entry_price_cents": _entry["price_cents"] if _entry else None,
-                                        **_snap_ctx,
-                                    })
-                                except Exception:
-                                    pass
-                            else:
-                                self.status["last_action"] = "SL: sell order rejected"
-                            return
-
-                    # Rule: Edge-exit — exit when remaining edge evaporates (time-scaled)
-                    if config.EDGE_EXIT_ENABLED and self.alpha and strike and strike > 0:
+                    # Hybrid Exit Rule: Quick profit-take OR edge fade
+                    # Priority: Take profit when available, use edge-fade as backup
+                    if self.alpha and strike and strike > 0:
                         try:
-                            fv = self.alpha.get_fair_value(strike, secs_left)
-                            fair_yes = fv.get("fair_yes_cents", 0)
-                            if pos_qty > 0:
-                                remaining_edge = fair_yes - best_bid
-                            else:
-                                remaining_edge = best_ask - fair_yes
-
-                            time_factor = min(1.0, max(0.0, secs_left / 900.0))
-                            edge_threshold = config.EDGE_EXIT_THRESHOLD_CENTS * time_factor
+                            sell_qty = abs(pos_qty)
+                            avg_cost = pos_exposure_cents / abs(pos_qty) if abs(pos_qty) > 0 else 0
+                            profit_per_contract = sell_price - avg_cost if avg_cost else 0
+                            pnl = round((sell_price - avg_cost) * sell_qty, 1) if avg_cost else 0
                             hold_elapsed = time.time() - self._entry_ts.get(ticker, 0)
 
-                            if (remaining_edge <= edge_threshold
-                                    and hold_elapsed >= config.EDGE_EXIT_MIN_HOLD_SECS):
-                                sell_qty = abs(pos_qty)
-                                log_event("TRADE", f"Edge-exit: remaining edge {remaining_edge:.1f}c <= threshold {edge_threshold:.1f}c (held {hold_elapsed:.0f}s)")
-                                order = await self.close_position(ticker, sell_side, sell_price, sell_qty, exit_type="EDGE")
+                            exit_triggered = False
+                            exit_reason = ""
+                            exit_type = ""
+
+                            # Rule 1: QUICK PROFIT - Lock in gains when target reached
+                            if (profit_per_contract >= config.QUICK_PROFIT_CENTS
+                                    and hold_elapsed >= config.MIN_HOLD_SECONDS):
+                                exit_triggered = True
+                                exit_reason = f"Quick profit: {profit_per_contract:.1f}c >= {config.QUICK_PROFIT_CENTS}c target (held {hold_elapsed:.0f}s, PnL ${pnl/100:.2f})"
+                                exit_type = "PROFIT"
+
+                            # Rule 2: EDGE FADE - Backup exit when opportunity disappears
+                            if not exit_triggered:
+                                fv = self.alpha.get_fair_value(strike, secs_left)
+                                fair_yes = fv.get("fair_yes_cents", 0)
+
+                                # Calculate remaining edge
+                                if pos_qty > 0:
+                                    remaining_edge = fair_yes - best_bid
+                                else:
+                                    remaining_edge = best_ask - fair_yes
+
+                                if (remaining_edge <= config.EDGE_FADE_THRESHOLD
+                                        and hold_elapsed >= config.MIN_HOLD_SECONDS):
+                                    exit_triggered = True
+                                    exit_reason = f"Edge faded: {remaining_edge:.1f}c <= {config.EDGE_FADE_THRESHOLD}c (held {hold_elapsed:.0f}s, PnL ${pnl/100:.2f})"
+                                    exit_type = "EDGE"
+
+                            # Execute exit if either rule triggered
+                            if exit_triggered:
+                                log_event("TRADE", exit_reason)
+
+                                order = await self.close_position(ticker, sell_side, sell_price, sell_qty, exit_type=exit_type)
                                 if order:
-                                    self.status["last_action"] = f"EDGE EXIT: sold {sell_qty}x {sell_side.upper()} @ {sell_price}c (edge {remaining_edge:.1f}c)"
-                                    self._edge_exit_ts[ticker] = time.time()
-                                    self._edge_exits_count[ticker] = self._edge_exits_count.get(ticker, 0) + 1
-                                    # Clear entry tracking (position is closed)
+                                    self.status["last_action"] = f"Exit: sold {sell_qty}x {sell_side.upper()} @ {sell_price}c ({exit_type.lower()})"
+
+                                    # Record exit timestamp for cooldown tracking
+                                    if not hasattr(self, '_last_exit_ts'):
+                                        self._last_exit_ts = {}
+                                    self._last_exit_ts[ticker] = time.time()
+
+                                    # Clear entry tracking
                                     self._entry_ts.pop(ticker, None)
                                     self._entry_edge.pop(ticker, None)
+
+                                    # Record snapshot
                                     try:
                                         _mid = f"[PAPER] {ticker}" if self.paper_mode else ticker
                                         _entry = get_entry_snapshot(_mid)
                                         _entry_ts_snap = datetime.fromisoformat(_entry["ts"]).timestamp() if _entry else None
-                                        avg_cost_edge = pos_exposure_cents / abs(pos_qty) if abs(pos_qty) > 0 else 0
-                                        _pnl = round((sell_price - avg_cost_edge) * sell_qty, 1) if avg_cost_edge else 0
-                                        record_snapshot({
+                                        snapshot_data = {
                                             "ts": datetime.now(timezone.utc).isoformat(),
                                             "trade_id": order.get("order_id", f"snap-{int(time.time()*1000)}"),
-                                            "market_id": _mid, "action": "EDGE", "side": sell_side,
+                                            "market_id": _mid, "action": exit_type, "side": sell_side,
                                             "price_cents": sell_price, "quantity": sell_qty,
-                                            "decision": "EDGE", "confidence": 0, "trigger_type": "edge_exit",
+                                            "decision": exit_type, "confidence": 0, "trigger_type": exit_type.lower(),
                                             "position_qty": abs(pos_qty),
-                                            "pnl_cents": _pnl,
-                                            "hold_duration_s": round(time.time() - _entry_ts_snap, 1) if _entry_ts_snap else None,
+                                            "pnl_cents": pnl,
+                                            "hold_duration_s": round(hold_elapsed, 1),
                                             "entry_price_cents": _entry["price_cents"] if _entry else None,
+                                            "profit_per_contract": round(profit_per_contract, 1),
                                             **_snap_ctx,
-                                        })
+                                        }
+                                        # Add remaining_edge for edge exits
+                                        if exit_type == "EDGE":
+                                            snapshot_data["remaining_edge"] = round(remaining_edge, 1)
+                                        record_snapshot(snapshot_data)
                                     except Exception:
                                         pass
                                 else:
-                                    self.status["last_action"] = "Edge exit: sell order rejected"
+                                    self.status["last_action"] = f"{exit_type} exit: sell order rejected"
                                 return
-                        except Exception:
-                            pass  # Fair value unavailable — skip edge-exit
-
-                    # Calculate profit for all profit-taking rules
-                    avg_cost = pos_exposure_cents / abs(pos_qty) if abs(pos_qty) > 0 else 0
-                    gain_pct = ((current_value - avg_cost) / avg_cost * 100) if avg_cost > 0 else 0
-
-                    # Rule: Hit-and-Run — instant exit at % profit (NO time restrictions)
-                    if config.HIT_RUN_PCT > 0 and gain_pct >= config.HIT_RUN_PCT:
-                        sell_qty = abs(pos_qty)
-                        log_event("TRADE", f"Hit-and-run: +{gain_pct:.0f}% gain ({current_value}c vs {avg_cost:.0f}c cost) >= {config.HIT_RUN_PCT}% target — instant exit")
-                        order = await self.close_position(ticker, sell_side, sell_price, sell_qty, exit_type="TP")
-                        if order:
-                            self.status["last_action"] = f"HIT&RUN: sold {sell_qty}x {sell_side.upper()} @ {sell_price}c (+{gain_pct:.0f}%)"
-                            self._took_profit.add(ticker)
-                            try:
-                                _mid = f"[PAPER] {ticker}" if self.paper_mode else ticker
-                                _entry = get_entry_snapshot(_mid)
-                                _entry_ts = datetime.fromisoformat(_entry["ts"]).timestamp() if _entry else None
-                                _pnl = round((sell_price - avg_cost) * sell_qty, 1) if avg_cost else 0
-                                record_snapshot({
-                                    "ts": datetime.now(timezone.utc).isoformat(),
-                                    "trade_id": order.get("order_id", f"snap-{int(time.time()*1000)}"),
-                                    "market_id": _mid, "action": "TP", "side": sell_side,
-                                    "price_cents": sell_price, "quantity": sell_qty,
-                                    "decision": "TP", "confidence": 0, "trigger_type": "hit_and_run",
-                                    "position_qty": abs(pos_qty),
-                                    "pnl_cents": _pnl,
-                                    "hold_duration_s": round(time.time() - _entry_ts, 1) if _entry_ts else None,
-                                    "entry_price_cents": _entry["price_cents"] if _entry else None,
-                                    **_snap_ctx,
-                                })
-                            except Exception:
-                                pass
-                        else:
-                            self.status["last_action"] = "Hit&Run: sell order rejected"
-                        return
-
-                    # Rule: Pop-and-Drop — full exit at % profit with time remaining
-                    if gain_pct >= config.PROFIT_TAKE_PCT and secs_left > config.PROFIT_TAKE_MIN_SECS:
-                        sell_qty = abs(pos_qty)
-                        log_event("TRADE", f"Profit take: +{gain_pct:.0f}% gain ({current_value}c vs {avg_cost:.0f}c cost) >= {config.PROFIT_TAKE_PCT}% target, {secs_left:.0f}s left — selling all")
-                        order = await self.close_position(ticker, sell_side, sell_price, sell_qty, exit_type="TP")
-                        if order:
-                            self.status["last_action"] = f"TP: sold {sell_qty}x {sell_side.upper()} @ {sell_price}c (+{gain_pct:.0f}%)"
-                            self._took_profit.add(ticker)
-                            try:
-                                _mid = f"[PAPER] {ticker}" if self.paper_mode else ticker
-                                _entry = get_entry_snapshot(_mid)
-                                _entry_ts = datetime.fromisoformat(_entry["ts"]).timestamp() if _entry else None
-                                _pnl = round((sell_price - avg_cost) * sell_qty, 1) if avg_cost else 0
-                                record_snapshot({
-                                    "ts": datetime.now(timezone.utc).isoformat(),
-                                    "trade_id": order.get("order_id", f"snap-{int(time.time()*1000)}"),
-                                    "market_id": _mid, "action": "TP", "side": sell_side,
-                                    "price_cents": sell_price, "quantity": sell_qty,
-                                    "decision": "TP", "confidence": 0, "trigger_type": "profit_take",
-                                    "position_qty": abs(pos_qty),
-                                    "pnl_cents": _pnl,
-                                    "hold_duration_s": round(time.time() - _entry_ts, 1) if _entry_ts else None,
-                                    "entry_price_cents": _entry["price_cents"] if _entry else None,
-                                    **_snap_ctx,
-                                })
-                            except Exception:
-                                pass
-                        else:
-                            self.status["last_action"] = "TP: sell order rejected"
-                        return
-
-                    # Rule: Free Roll — take profit on entire position when price threshold hit
-                    if (current_value >= config.FREE_ROLL_PRICE
-                            and ticker not in self._free_rolled):
-                        full_qty = abs(pos_qty)
-                        log_event("TRADE", f"Free roll: {current_value}c >= {config.FREE_ROLL_PRICE}c — selling entire position ({full_qty}x)")
-                        order = await self.close_position(ticker, sell_side, sell_price, full_qty)
-                        if order:
-                            self._free_rolled.add(ticker)
-                            self.status["last_action"] = f"Free roll: sold {full_qty}x {sell_side.upper()} @ {sell_price}c"
-                            try:
-                                _mid = f"[PAPER] {ticker}" if self.paper_mode else ticker
-                                _entry = get_entry_snapshot(_mid)
-                                _entry_ts = datetime.fromisoformat(_entry["ts"]).timestamp() if _entry else None
-                                _pnl = round((sell_price - avg_cost) * full_qty, 1) if avg_cost else 0
-                                record_snapshot({
-                                    "ts": datetime.now(timezone.utc).isoformat(),
-                                    "trade_id": order.get("order_id", f"snap-{int(time.time()*1000)}"),
-                                    "market_id": _mid, "action": "SELL", "side": sell_side,
-                                    "price_cents": sell_price, "quantity": full_qty,
-                                    "decision": "SELL", "confidence": 0, "trigger_type": "free_roll",
-                                    "position_qty": full_qty,
-                                    "pnl_cents": _pnl,
-                                    "hold_duration_s": round(time.time() - _entry_ts, 1) if _entry_ts else None,
-                                    "entry_price_cents": _entry["price_cents"] if _entry else None,
-                                    **_snap_ctx,
-                                })
-                            except Exception:
-                                pass
-                        else:
-                            self.status["last_action"] = "Free roll: sell order rejected"
-                        return
+                        except Exception as e:
+                            # Fair value unavailable — can't check edge, hold position
+                            log_event("DEBUG", f"Exit check failed: {e}")
+                            pass
 
             # 6. Time guard
             if not self._time_guard(market):
@@ -1832,26 +1727,16 @@ class TradingBot:
                     return
 
             # Take-profit guard: never re-enter a contract after we've taken profit
-            if ticker in self._took_profit:
-                log_event("GUARD", f"TP guard: already took profit on {ticker} — no re-entry")
-                self.status["last_action"] = "Already took profit — no re-entry"
-                return
-
-            # Edge-exit re-entry guard: cooldown + premium edge required
-            if ticker in self._edge_exit_ts:
-                cooldown_elapsed = time.time() - self._edge_exit_ts[ticker]
-                if cooldown_elapsed < config.EDGE_EXIT_COOLDOWN_SECS:
-                    remaining_cd = config.EDGE_EXIT_COOLDOWN_SECS - cooldown_elapsed
-                    log_event("GUARD", f"Edge re-entry cooldown: {remaining_cd:.0f}s remaining")
-                    self.status["last_action"] = f"Edge re-entry cooldown ({remaining_cd:.0f}s left)"
+            # SCALPING RE-ENTRY LOGIC: Simple cooldown only
+            # No profit-take lockout, no edge premium - just a brief cooldown to prevent thrashing
+            if ticker in self._last_exit_ts:
+                cooldown_elapsed = time.time() - self._last_exit_ts[ticker]
+                if cooldown_elapsed < config.REENTRY_COOLDOWN_SECONDS:
+                    remaining_cd = config.REENTRY_COOLDOWN_SECONDS - cooldown_elapsed
+                    log_event("GUARD", f"Re-entry cooldown: {remaining_cd:.0f}s remaining")
+                    self.status["last_action"] = f"Re-entry cooldown ({remaining_cd:.0f}s left)"
                     return
-                # After cooldown, require extra edge premium for re-entry
-                entry_side_edge = dashboard.get("yes_edge", 0) if side == "yes" else dashboard.get("no_edge", 0)
-                required_edge = config.MIN_EDGE_CENTS + config.REENTRY_EDGE_PREMIUM
-                if entry_side_edge < required_edge:
-                    log_event("GUARD", f"Edge re-entry premium: edge {entry_side_edge}c < required {required_edge}c (MIN_EDGE {config.MIN_EDGE_CENTS} + premium {config.REENTRY_EDGE_PREMIUM})")
-                    self.status["last_action"] = f"Insufficient edge for re-entry ({entry_side_edge}c < {required_edge}c)"
-                    return
+                # Cooldown expired - can re-enter if edge exists (already checked by agent)
 
             # Entry pricing strategy based on signal urgency:
             # - Extreme momentum: cross spread immediately (market-take)
@@ -1905,13 +1790,21 @@ class TradingBot:
                 self.status["last_action"] = f"Max exposure reached (${total_exposure:.2f})"
                 return
 
-            # Dynamic contract sizing from balance percentages
-            # price_cents is the cost per contract we'd pay
-            position_budget = balance * config.MAX_POSITION_PCT / 100.0
-            max_position = max(1, int(position_budget / (price_cents / 100.0))) if price_cents > 0 else 1
+            # Dynamic position sizing based on edge and market conditions (percentage-based)
+            spread_cents = best_ask - best_bid if best_ask > best_bid else 1
+            edge_cents = decision.get("edge", 0) if decision else 0
 
-            order_budget = balance * config.ORDER_SIZE_PCT / 100.0
-            order_size = max(1, int(order_budget / (price_cents / 100.0))) if price_cents > 0 else 1
+            # Calculate desired size as percentage of balance based on edge strength
+            desired_size_pct = self._calculate_position_size_pct(edge_cents, spread_cents)
+
+            # Convert percentage to contracts based on balance and price
+            position_budget = balance * desired_size_pct / 100.0
+            order_size = max(1, int(position_budget / (price_cents / 100.0))) if price_cents > 0 else 1
+
+            # Cap at MAX_POSITION_PCT for safety
+            max_position_budget = balance * config.MAX_POSITION_PCT / 100.0
+            max_position = max(1, int(max_position_budget / (price_cents / 100.0))) if price_cents > 0 else 1
+            order_size = min(order_size, max_position)
 
             # Re-fetch positions after cancel (fills may have occurred since initial fetch)
             positions = await self.fetch_positions()

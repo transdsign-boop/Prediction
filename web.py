@@ -22,8 +22,10 @@ from trader import TradingBot
 FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
 
 alpha_monitor = AlphaMonitor()
-bot = TradingBot(alpha_monitor=alpha_monitor)
-bot_task: asyncio.Task | None = None
+bot_live = TradingBot(alpha_monitor=alpha_monitor, mode="live")
+bot_paper = TradingBot(alpha_monitor=alpha_monitor, mode="demo")
+bot_live_task: asyncio.Task | None = None
+bot_paper_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -31,19 +33,24 @@ async def lifespan(app: FastAPI):
     init_db()
     restore_tunables()
     # Restore paper trading state (balance, positions) from DB
-    if bot.paper_mode:
-        bot._restore_paper_state()
+    bot_paper._restore_paper_state()
     await alpha_monitor.start()
-    # Auto-start bot if it was running before restart/deploy
-    if get_setting("bot_running") == "1":
-        global bot_task
-        bot_task = asyncio.create_task(bot.run())
+    # Auto-start bots if they were running before restart/deploy
+    global bot_live_task, bot_paper_task
+    if get_setting("bot_live_running") == "1":
+        bot_live_task = asyncio.create_task(bot_live.run())
+    if get_setting("bot_paper_running") == "1":
+        bot_paper_task = asyncio.create_task(bot_paper.run())
     yield
-    # Shutdown: stop bot if running
-    if bot.running:
-        bot.stop()
-        if bot_task and not bot_task.done():
-            bot_task.cancel()
+    # Shutdown: stop both bots if running
+    if bot_live.running:
+        bot_live.stop()
+        if bot_live_task and not bot_live_task.done():
+            bot_live_task.cancel()
+    if bot_paper.running:
+        bot_paper.stop()
+        if bot_paper_task and not bot_paper_task.done():
+            bot_paper_task.cancel()
     await alpha_monitor.stop()
 
 
@@ -54,8 +61,8 @@ app = FastAPI(title="Kalshi BTC Auto-Trader", lifespan=lifespan)
 # API — consumed by React frontend & JSON clients
 # ------------------------------------------------------------------
 
-@app.get("/api/status")
-async def api_status():
+async def _build_status(bot):
+    """Extract status dict for a single bot instance."""
     decision = bot.status.get("last_decision") or get_latest_decision()
     pos = bot.status.get("active_position")
     pos_label = "None"
@@ -157,9 +164,8 @@ async def api_status():
         "confidence": decision.get("confidence", 0) if decision else 0,
         "reasoning": decision.get("reasoning", "") if decision else "",
         "trading_enabled": config.TRADING_ENABLED,
-        "env": config.KALSHI_ENV,
-        "paper_mode": config.KALSHI_ENV == "demo",
-        "alpha": alpha_monitor.get_status(),
+        "env": bot.status.get("env"),
+        "paper_mode": bot.paper_mode,
         "alpha_override": bot.status.get("alpha_override"),
         "alpha_signal": bot.status.get("alpha_signal"),
         "alpha_signal_diff": bot.status.get("alpha_signal_diff"),
@@ -169,6 +175,18 @@ async def api_status():
         "close_time": bot.status.get("close_time"),
         "market_title": bot.status.get("market_title"),
         "dashboard": _patch_dashboard(bot.status.get("dashboard"), best_bid, best_ask),
+    }
+
+
+@app.get("/api/status")
+async def api_status():
+    """Return status for both live and paper trading modes."""
+    live_status = await _build_status(bot_live)
+    paper_status = await _build_status(bot_paper)
+    return {
+        "live": live_status,
+        "paper": paper_status,
+        "alpha": alpha_monitor.get_status(),
     }
 
 
@@ -195,21 +213,23 @@ def _patch_dashboard(db: dict | None, best_bid: int, best_ask: int) -> dict | No
             exits["profit_take"] = {**exits["profit_take"], "threshold": config.PROFIT_TAKE_PCT}
         if exits.get("free_roll"):
             exits["free_roll"] = {**exits["free_roll"], "threshold": config.FREE_ROLL_PRICE}
+        if exits.get("quick_profit"):
+            exits["quick_profit"] = {**exits["quick_profit"], "enabled": True, "threshold": config.QUICK_PROFIT_CENTS}
         if exits.get("edge_exit"):
-            exits["edge_exit"] = {**exits["edge_exit"], "enabled": config.EDGE_EXIT_ENABLED, "min_hold": config.EDGE_EXIT_MIN_HOLD_SECS}
+            exits["edge_exit"] = {**exits["edge_exit"], "enabled": True, "threshold": config.EDGE_FADE_THRESHOLD, "min_hold": config.MIN_HOLD_SECONDS}
         db["exits"] = exits
-    # Patch edge-exit config values
-    db["edge_exit_enabled"] = config.EDGE_EXIT_ENABLED
-    db["edge_exit_threshold"] = config.EDGE_EXIT_THRESHOLD_CENTS
-    db["edge_exit_cooldown"] = config.EDGE_EXIT_COOLDOWN_SECS
-    db["reentry_edge_premium"] = config.REENTRY_EDGE_PREMIUM
+    # Patch scalping config values (new names)
+    db["quick_profit_cents"] = config.QUICK_PROFIT_CENTS
+    db["edge_fade_threshold"] = config.EDGE_FADE_THRESHOLD
+    db["min_hold_seconds"] = config.MIN_HOLD_SECONDS
+    db["reentry_cooldown_seconds"] = config.REENTRY_COOLDOWN_SECONDS
     return db
 
 
 @app.get("/api/debug/market")
 async def api_debug_market():
     """Expose raw market data for debugging strike extraction."""
-    return bot.status.get("_raw_market") or {}
+    return bot_live.status.get("_raw_market") or {}
 
 
 @app.get("/api/logs")
@@ -255,7 +275,7 @@ async def backfill_settlements():
     for entry in unsettled:
         ticker = entry["market_id"]
         try:
-            await bot._settle_live_positions(ticker)
+            await bot_live._settle_live_positions(ticker)
             results.append({"ticker": ticker, "status": "settled"})
         except Exception as exc:
             results.append({"ticker": ticker, "status": "error", "error": str(exc)})
@@ -283,7 +303,7 @@ async def kalshi_fills(since: str = ""):
     if since:
         params["min_ts"] = since
     try:
-        data = await bot._get("/portfolio/fills", params=params)
+        data = await bot_live._get("/portfolio/fills", params=params)
         return data
     except Exception as exc:
         return {"error": str(exc)}
@@ -309,7 +329,7 @@ async def reconcile_trades(since_utc: str = "2026-02-01T00:00:00Z"):
         if cursor:
             params["cursor"] = cursor
         try:
-            data = await bot._get("/portfolio/fills", params=params)
+            data = await bot_live._get("/portfolio/fills", params=params)
         except Exception as exc:
             return {"error": f"Failed to fetch fills: {exc}"}
         fills = data.get("fills", [])
@@ -386,7 +406,7 @@ async def reconcile_trades(since_utc: str = "2026-02-01T00:00:00Z"):
         # Query Kalshi for market result
         market_result = ""
         try:
-            mkt_data = await bot._get(f"/markets/{ticker}")
+            mkt_data = await bot_live._get(f"/markets/{ticker}")
             market_data = mkt_data.get("market", mkt_data)
             market_result = market_data.get("result", "")
         except Exception:
@@ -537,50 +557,64 @@ async def reconcile_trades(since_utc: str = "2026-02-01T00:00:00Z"):
 # Controls
 # ------------------------------------------------------------------
 
-@app.post("/api/start")
-async def start_bot():
-    global bot_task
-    if bot.running:
+@app.post("/api/live/start")
+async def start_live():
+    global bot_live_task
+    if bot_live.running:
         return {"ok": False, "msg": "Already running"}
-    bot_task = asyncio.create_task(bot.run())
-    set_setting("bot_running", "1")
+    bot_live_task = asyncio.create_task(bot_live.run())
+    set_setting("bot_live_running", "1")
     return {"ok": True}
 
 
-@app.post("/api/stop")
-async def stop_bot():
-    if not bot.running:
+@app.post("/api/live/stop")
+async def stop_live():
+    if not bot_live.running:
         return {"ok": False, "msg": "Not running"}
-    bot.stop()
-    set_setting("bot_running", "0")
+    bot_live.stop()
+    set_setting("bot_live_running", "0")
+    return {"ok": True}
+
+
+@app.post("/api/paper/start")
+async def start_paper():
+    global bot_paper_task
+    if bot_paper.running:
+        return {"ok": False, "msg": "Already running"}
+    bot_paper_task = asyncio.create_task(bot_paper.run())
+    set_setting("bot_paper_running", "1")
+    return {"ok": True}
+
+
+@app.post("/api/paper/stop")
+async def stop_paper():
+    if not bot_paper.running:
+        return {"ok": False, "msg": "Not running"}
+    bot_paper.stop()
+    set_setting("bot_paper_running", "0")
     return {"ok": True}
 
 
 @app.post("/api/paper/reset")
 async def reset_paper():
-    if not bot.paper_mode:
-        return {"ok": False, "msg": "Not in paper mode"}
-    was_running = bot.running
+    """Reset paper trading using current live balance as starting point."""
+    was_running = bot_paper.running
     if was_running:
-        bot.stop()
-        set_setting("bot_running", "0")
+        bot_paper.stop()
+        set_setting("bot_paper_running", "0")
         await asyncio.sleep(1)
-    bot.reset_paper_trading()
-    return {"ok": True, "balance": config.PAPER_STARTING_BALANCE}
+
+    # Fetch current live balance and use as starting balance
+    try:
+        live_balance = await bot_live.fetch_balance()
+    except Exception:
+        # If live balance fetch fails, fall back to config default
+        live_balance = config.PAPER_STARTING_BALANCE
+
+    bot_paper.reset_paper_trading(starting_balance=live_balance)
+    return {"ok": True, "balance": live_balance}
 
 
-class EnvRequest(BaseModel):
-    env: str
-
-
-@app.post("/api/env")
-async def switch_env(req: EnvRequest):
-    if req.env not in ("demo", "live"):
-        return {"ok": False, "msg": "Invalid env"}
-    if bot.running:
-        bot.stop()
-    await bot.switch_environment(req.env)
-    return {"ok": True, "env": req.env}
 
 
 class ChatMessage(BaseModel):
@@ -610,9 +644,9 @@ async def chat(req: ChatRequest):
             log_event("AI_CONFIG", f"AI changed {k} → {v}")
         return applied
 
-    reply = await bot.agent.chat(
+    reply = await bot_live.agent.chat(
         req.message,
-        bot_status=bot.status,
+        bot_status=bot_live.status,
         trades_summary=trades_summary,
         config=config_data,
         history=history,

@@ -64,21 +64,23 @@ MIN_SECONDS_TO_CLOSE = 90
 MAX_SPREAD_CENTS = 25
 MIN_CONTRACT_PRICE = 5
 MAX_CONTRACT_PRICE = 85           # avoid buying above this (bad risk/reward)
-STOP_LOSS_CENTS = 15              # exit position if down this many cents/contract
+STOP_LOSS_CENTS = 0               # DISABLED — trust edge-exit only
 
-# Profit-taking
-HIT_RUN_PCT = float(os.getenv("HIT_RUN_PCT", "0"))  # % gain — instant exit when hit (no time restrictions)
-PROFIT_TAKE_PCT = 50              # % gain from entry — full exit when profit exceeds this
-FREE_ROLL_PRICE = 90              # cents — sell half to lock in capital
-PROFIT_TAKE_MIN_SECS = 300        # only take full profit if >5 min remain
-HOLD_EXPIRY_SECS = 120            # don't sell in last 2 minutes — ride to settlement
+# Profit-taking (DISABLED for scalping — use edge-fade exit instead)
+HIT_RUN_PCT = float(os.getenv("HIT_RUN_PCT", "0"))  # DISABLED
+PROFIT_TAKE_PCT = 0               # DISABLED — no fixed profit targets
+FREE_ROLL_PRICE = 999             # DISABLED — effectively never triggers
+PROFIT_TAKE_MIN_SECS = 300        # Not used when PROFIT_TAKE_PCT = 0
+HOLD_EXPIRY_SECS = 0              # DISABLED — allow exits in final minutes
 
-# Edge-based exit (exit when edge evaporates, re-enter when new edge appears)
-EDGE_EXIT_ENABLED = os.getenv("EDGE_EXIT_ENABLED", "true").lower() == "true"
-EDGE_EXIT_THRESHOLD_CENTS = int(os.getenv("EDGE_EXIT_THRESHOLD_CENTS", "2"))    # remaining edge threshold (scaled by time_factor)
-EDGE_EXIT_MIN_HOLD_SECS = int(os.getenv("EDGE_EXIT_MIN_HOLD_SECS", "30"))      # min hold before edge-exit can fire
-EDGE_EXIT_COOLDOWN_SECS = int(os.getenv("EDGE_EXIT_COOLDOWN_SECS", "30"))      # cooldown before re-entry after edge-exit
-REENTRY_EDGE_PREMIUM = int(os.getenv("REENTRY_EDGE_PREMIUM", "3"))             # extra edge (c) required for re-entry
+# SCALPING PARAMETERS: Edge-based entry/exit with unlimited re-entries (REAL-TIME OPTIMIZED)
+QUICK_PROFIT_CENTS = int(os.getenv("QUICK_PROFIT_CENTS", "4"))          # take profit when position profit >= this (cents per contract)
+EDGE_FADE_THRESHOLD = int(os.getenv("EDGE_FADE_THRESHOLD", "1"))        # exit when remaining edge <= this (cents) - backup exit
+MIN_HOLD_SECONDS = int(os.getenv("MIN_HOLD_SECONDS", "3"))              # min hold before exit (fast scalping - 3s)
+REENTRY_COOLDOWN_SECONDS = int(os.getenv("REENTRY_COOLDOWN_SECONDS", "3"))  # cooldown after exit before re-entry (3s for max speed)
+BASE_POSITION_SIZE_PCT = float(os.getenv("BASE_POSITION_SIZE_PCT", "5.0"))    # default position size (% of balance)
+MAX_POSITION_SIZE_PCT = float(os.getenv("MAX_POSITION_SIZE_PCT", "15.0"))     # max position size (% of balance)
+STRONG_EDGE_THRESHOLD = int(os.getenv("STRONG_EDGE_THRESHOLD", "8"))          # edge threshold for scaling up position
 
 # Alpha Engine thresholds
 DELTA_THRESHOLD = 20              # USD — front-run trigger (momentum deviation)
@@ -91,7 +93,7 @@ LEAD_LAG_ENABLED = os.getenv("LEAD_LAG_ENABLED", "false").lower() == "true"  # E
 VOL_HIGH_THRESHOLD = float(os.getenv("VOL_HIGH_THRESHOLD", "400.0"))          # $/min tick path — above = high vol (trend-follow). Tick path ~5x candle; BTC avg candle ~$87 ≈ $500 tick.
 VOL_LOW_THRESHOLD = float(os.getenv("VOL_LOW_THRESHOLD", "200.0"))            # $/min tick path — below = low vol (sit out). BTC quiet candle ~$40 ≈ $200 tick.
 FAIR_VALUE_K = float(os.getenv("FAIR_VALUE_K", "0.6"))                       # logistic steepness — 0.6 = moderate. Lower = less extreme probabilities, finds more edge in 15-85c range
-MIN_EDGE_CENTS = int(os.getenv("MIN_EDGE_CENTS", "5"))                      # min mispricing to trade (5c = good balance for 15m binaries)
+MIN_EDGE_CENTS = int(os.getenv("MIN_EDGE_CENTS", "3"))                      # min mispricing to trade (3c = scalping threshold, more opportunities)
 TREND_FOLLOW_VELOCITY = float(os.getenv("TREND_FOLLOW_VELOCITY", "2.0"))     # $/sec — BTC ~$120/min = $2/sec triggers trend bonus
 RULE_SIT_OUT_LOW_VOL = os.getenv("RULE_SIT_OUT_LOW_VOL", "true").lower() == "true"
 RULE_MIN_CONFIDENCE = float(os.getenv("RULE_MIN_CONFIDENCE", "0.6"))         # min confidence to execute (0.6 = needs real edge + time)
@@ -103,8 +105,8 @@ PAPER_FILL_FRACTION = float(os.getenv("PAPER_FILL_FRACTION", "1.0"))  # fraction
 # Live trading starting balance (for PnL calculation - set to your balance on Feb 1, 2026)
 LIVE_STARTING_BALANCE = float(os.getenv("LIVE_STARTING_BALANCE", "277.0"))
 
-# Loop interval
-POLL_INTERVAL_SECONDS = 10
+# Loop interval (reduced for real-time fair value updates)
+POLL_INTERVAL_SECONDS = 5
 
 
 # --- Runtime helpers ---
@@ -120,11 +122,11 @@ TUNABLE_FIELDS = {
     "MAX_CONTRACT_PRICE":   {"type": "int",   "min": 50, "max": 99},
     "STOP_LOSS_CENTS":      {"type": "int",   "min": 0,  "max": 99},
     "HIT_RUN_PCT":          {"type": "float", "min": 0,  "max": 500},
-    "PROFIT_TAKE_PCT":      {"type": "int",   "min": 5,  "max": 500},
-    "FREE_ROLL_PRICE":      {"type": "int",   "min": 75, "max": 99},
+    "PROFIT_TAKE_PCT":      {"type": "int",   "min": 0,  "max": 500},
+    "FREE_ROLL_PRICE":      {"type": "int",   "min": 75, "max": 999},
     "PROFIT_TAKE_MIN_SECS": {"type": "int",   "min": 60, "max": 600},
-    "HOLD_EXPIRY_SECS":     {"type": "int",   "min": 30, "max": 300},
-    "POLL_INTERVAL_SECONDS":{"type": "int",   "min": 5,  "max": 120},
+    "HOLD_EXPIRY_SECS":     {"type": "int",   "min": 0, "max": 300},
+    "POLL_INTERVAL_SECONDS":{"type": "int",   "min": 3,  "max": 120},
     "DELTA_THRESHOLD":          {"type": "int",   "min": 5,   "max": 200},
     "EXTREME_DELTA_THRESHOLD":  {"type": "int",   "min": 10,  "max": 500},
     "ANCHOR_SECONDS_THRESHOLD": {"type": "int",   "min": 15,  "max": 120},
@@ -137,11 +139,13 @@ TUNABLE_FIELDS = {
     "TREND_FOLLOW_VELOCITY":    {"type": "float", "min": 0.5, "max": 20.0},
     "RULE_SIT_OUT_LOW_VOL":     {"type": "bool"},
     "RULE_MIN_CONFIDENCE":      {"type": "float", "min": 0.3, "max": 0.95},
-    "EDGE_EXIT_ENABLED":        {"type": "bool"},
-    "EDGE_EXIT_THRESHOLD_CENTS":{"type": "int",   "min": 0,  "max": 15},
-    "EDGE_EXIT_MIN_HOLD_SECS":  {"type": "int",   "min": 10, "max": 120},
-    "EDGE_EXIT_COOLDOWN_SECS":  {"type": "int",   "min": 10, "max": 120},
-    "REENTRY_EDGE_PREMIUM":     {"type": "int",   "min": 0,  "max": 15},
+    "QUICK_PROFIT_CENTS":       {"type": "int",   "min": 1,  "max": 20},
+    "EDGE_FADE_THRESHOLD":      {"type": "int",   "min": 0,  "max": 15},
+    "MIN_HOLD_SECONDS":         {"type": "int",   "min": 1,  "max": 120},
+    "REENTRY_COOLDOWN_SECONDS": {"type": "int",   "min": 5,  "max": 120},
+    "BASE_POSITION_SIZE_PCT":   {"type": "float", "min": 1.0, "max": 50.0},
+    "MAX_POSITION_SIZE_PCT":    {"type": "float", "min": 1.0, "max": 50.0},
+    "STRONG_EDGE_THRESHOLD":    {"type": "int",   "min": 3,  "max": 20},
     "PAPER_STARTING_BALANCE":   {"type": "float", "min": 10,  "max": 100000},
     "PAPER_FILL_FRACTION":      {"type": "float", "min": 0.05, "max": 1.0},
     "LIVE_STARTING_BALANCE":    {"type": "float", "min": 10,  "max": 100000},
@@ -194,17 +198,3 @@ def restore_tunables():
             continue
 
 
-def switch_env(env: str):
-    """Switch active Kalshi environment and update resolved credentials.
-
-    Both 'demo' (paper) and 'live' use the live Kalshi API.
-    'demo' mode simulates trades without placing real orders.
-    """
-    import config as _self
-    if env not in ("demo", "live"):
-        raise ValueError(f"Invalid env: {env}")
-    _self.KALSHI_ENV = env
-    # Always use live credentials — demo mode is paper trading on the live API
-    _self.KALSHI_API_KEY_ID = _self.KALSHI_LIVE_API_KEY_ID
-    _self.KALSHI_API_PRIVATE_KEY_PATH = _self.KALSHI_LIVE_PRIVATE_KEY_PATH
-    return env
